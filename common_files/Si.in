@@ -1,0 +1,45 @@
+log Si.log
+units                   electron                                                   
+dimension               2                                                          
+processors              * * *                                                        
+boundary                p p p                                                      
+
+#####################################################################              
+
+variable time equal 25*0.02418884326                                               
+
+#####################################################################              
+
+#read data
+atom_style              molecular                                                  
+read_data               Results/Si.data                                                  
+timestep ${time}                                                                   
+
+#####################################################################              
+
+#potential                                                                         
+include                 Results/PARM_Si.lammps                                                
+
+#####################################################################              
+
+#outputs                                                                           
+thermo                  0                                                       
+thermo_style            custom step pe ke epair ebond etotal vol temp              
+
+#####################################################################              
+
+dump                    1 all custom 1000000000 Si_dump.lammpstrj id element type x y z     
+dump_modify             1 element Si                                             
+thermo_modify           line yaml                                                  
+
+#####################################################################              
+
+#initial minimisation                                                              
+
+min_style               sd                                                         
+minimize        1.0e-6 0.0 1000000 10000000                                       
+
+#####################################################################              
+
+#write_data              Si_results.dat                                              
+#write_restart  C_results.rest                                                     
