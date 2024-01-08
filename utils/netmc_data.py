@@ -1,9 +1,11 @@
 from __future__ import annotations
-import numpy as np
-from pathlib import Path
-from enum import Enum
+
 from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+
 import networkx as nx
+import numpy as np
 
 
 class NetworkType(Enum):
@@ -17,12 +19,12 @@ NETMC_FILE_SUFFIXES = ("_A_aux.dat", "_A_crds.dat", "_A_net.dat", "_A_dual.dat",
                        "_B_aux.dat", "_B_crds.dat", "_B_net.dat", "_A_dual.dat")
 
 
-def np_delete_element(array: np.array, target) -> np.array:
+def np_delete_element(array: np.ndarray, target) -> np.ndarray:
     index = np.nonzero(array == target)
     return np.delete(array, index)
 
 
-def get_dim(array: np.array, col_index: int, minimum: bool = False) -> float | np.float64:
+def get_dim(array: np.ndarray, col_index: int, minimum: bool = False) -> float | np.float64:
     """Return the minimum or maximum value of a column of a 2D array.
     minimum = True means return minimum, else, return maximum
     """
@@ -31,14 +33,14 @@ def get_dim(array: np.array, col_index: int, minimum: bool = False) -> float | n
     return max(array[:, col_index])
 
 
-def shift_nodes(array: np.array, deleted_node: int | np.int64) -> np.array:
+def shift_nodes(array: np.ndarray, deleted_node: int | np.int64) -> np.ndarray:
     for i, node in enumerate(array):
         if node > deleted_node:
             array[i] -= 1
     return array
 
 
-def check_nets(net_1: list, net_2: list) -> bool:
+def check_nets(net_1: NetMCNets, net_2: NetMCNets) -> bool:
     valid = True
     for selected_node, net in enumerate(net_1.nets):
         for bonded_node in net:
@@ -53,21 +55,18 @@ def compare_aux_dim_crd_dim(aux_dim: float | np.float64, crd_dim: float | np.flo
                             network_type: NetworkType, dim_string: str) -> bool:
     if "lo" in dim_string:
         if aux_dim > crd_dim:
-            print(f"aux_{network_type.value} {dim_string} greater than crds_{
-                  network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            print(f"aux_{network_type.value} {dim_string} greater than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
             return False
     elif "hi" in dim_string:
         if aux_dim < crd_dim:
-            print(f"aux_{network_type.value} {dim_string} less than crds_{
-                  network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            print(f"aux_{network_type.value} {dim_string} less than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
             return False
     elif aux_dim != crd_dim:
-        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{
-              network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
+        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
     return True
 
 
-def get_graph(coords: np.array, nets: NetMCNets) -> nx.Graph:
+def get_graph(coords: np.ndarray, nets: NetMCNets) -> nx.Graph:
     graph = nx.Graph()
     for selected_node, coord in enumerate(coords):
         graph.add_node(selected_node, pos=coord)
@@ -80,8 +79,8 @@ def get_graph(coords: np.array, nets: NetMCNets) -> nx.Graph:
 class NetMCData:
     aux_a: NetMCAux
     aux_b: NetMCAux
-    crds_a: np.array
-    crds_b: np.array
+    crds_a: np.ndarray
+    crds_b: np.ndarray
     net_a: NetMCNets
     net_b: NetMCNets
     dual_a: NetMCNets
@@ -92,19 +91,18 @@ class NetMCData:
         self.num_nodes_b = len(self.crds_b)
 
     def delete_node(self, deleted_node: int | np.int64, deleted_node_network: str):
-        deleted_node_network = NetworkType(deleted_node_network)
-        if deleted_node_network == NetworkType.A:
+        if NetworkType(deleted_node_network) == NetworkType.A:
             self.crds_a = np.delete(self.crds_a, deleted_node, axis=0)
             self.num_nodes_a -= 1
-        elif deleted_node_network == NetworkType.B:
+        elif NetworkType(deleted_node_network) == NetworkType.B:
             self.crds_b = np.delete(self.crds_b, deleted_node, axis=0)
             self.num_nodes_b -= 1
-        self.aux_a.delete_node(deleted_node, deleted_node_network)
-        self.aux_b.delete_node(deleted_node, deleted_node_network)
-        self.net_a.delete_node(deleted_node, deleted_node_network)
-        self.net_b.delete_node(deleted_node, deleted_node_network)
-        self.dual_a.delete_node(deleted_node, deleted_node_network)
-        self.dual_b.delete_node(deleted_node, deleted_node_network)
+        self.aux_a.delete_node(NetworkType(deleted_node_network))
+        self.aux_b.delete_node(NetworkType(deleted_node_network))
+        self.net_a.delete_node(deleted_node, NetworkType(deleted_node_network))
+        self.net_b.delete_node(deleted_node, NetworkType(deleted_node_network))
+        self.dual_a.delete_node(deleted_node, NetworkType(deleted_node_network))
+        self.dual_b.delete_node(deleted_node, NetworkType(deleted_node_network))
         self.refresh_auxs()
 
     def refresh_auxs(self):
@@ -229,20 +227,19 @@ class NetMCData:
 class NetMCNets:
     network_type: NetworkType
     connected_to: NetworkType
-    nets: list[np.array] = field(default_factory=lambda: [])
+    nets: list[np.ndarray] = field(default_factory=lambda: [])
 
     def __post_init__(self) -> None:
         self.num_nodes = len(self.nets)
 
-    def add_net(self, net: np.array) -> None:
+    def add_net(self, net: np.ndarray) -> None:
         self.nets.append(net)
         self.num_nodes += 1
 
-    def delete_node(self, deleted_node: int | np.int64, deleted_node_network: str):
-        deleted_node_network = NetworkType(deleted_node_network)
-        if deleted_node_network == self.network_type:
+    def delete_node(self, deleted_node: int | np.int64, deleted_node_network: NetworkType):
+        if NetworkType(deleted_node_network) == self.network_type:
             del self.nets[deleted_node]
-        if deleted_node_network == self.connected_to:
+        if NetworkType(deleted_node_network) == self.connected_to:
             for i, net in enumerate(self.nets):
                 temp = self.nets[i]
                 if deleted_node in net:
@@ -272,7 +269,7 @@ class NetMCNets:
         return NetMCNets(network_type=network_type, connected_to=connected_to, nets=nets)
 
     @staticmethod
-    def from_array(array: list[np.array], network_type: NetworkType, connected_to: NetworkType):
+    def from_array(array: list[np.ndarray], network_type: NetworkType, connected_to: NetworkType):
         return NetMCNets(network_type, connected_to, array)
 
     def export(self, output_path: Path = Path.cwd(), prefix: str = "default") -> None:
@@ -282,7 +279,7 @@ class NetMCNets:
                     net_file.write(f"{connected_node:<20}")
                 net_file.write("\n")
 
-    def shift_export(self, output_path: Path = Path.cwd(), deleted_nodes: np.array = np.array([]),
+    def shift_export(self, output_path: Path = Path.cwd(), deleted_nodes: np.ndarray = np.array([]),
                      prefix: str = "default",) -> None:
         with open(output_path.joinpath(f"{prefix}_{self.network_type.value}_{CONNECTED_MAP[self.network_type][self.connected_to]}.dat"), 'w') as net_file:
             for net in self.nets:
@@ -311,9 +308,9 @@ class NetMCNets:
 
 @dataclass
 class NetMCAux:
-    num_nodes: int
-    max_cnxs: int
-    max_cnxs_dual: int
+    num_nodes: int | np.int64
+    max_cnxs: int | np.int64
+    max_cnxs_dual: int | np.int64
     geom_code: str
     xlo: float | np.float64
     xhi: float | np.float64
@@ -357,7 +354,7 @@ class NetMCAux:
     def refresh(self, num_nodes: int | np.int64, max_cnxs_a: int | np.int64,
                 max_cnxs_b: int | np.int64, xlo: float | np.float64,
                 xhi: float | np.float64, ylo: float | np.float64,
-                yhi: float | np.float64):
+                yhi: float | np.float64) -> None:
         self.num_nodes = num_nodes
         self.max_cnxs_a = max_cnxs_a
         self.max_cnxs_b = max_cnxs_b
