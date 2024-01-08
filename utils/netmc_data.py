@@ -18,7 +18,7 @@ NETMC_FILE_SUFFIXES = ("_A_aux.dat", "_A_crds.dat", "_A_net.dat", "_A_dual.dat",
 
 
 def np_delete_element(array: np.array, target) -> np.array:
-    index = np.where(array == target)
+    index = np.nonzero(array == target)
     return np.delete(array, index)
 
 
@@ -40,69 +40,146 @@ def shift_nodes(array: np.array, deleted_node: int | np.int64) -> np.array:
 
 def check_nets(net_1: list, net_2: list) -> bool:
     valid = True
-    for selected_node, net in enumerate(net_1):
+    for selected_node, net in enumerate(net_1.nets):
         for bonded_node in net:
-            if selected_node not in net_2[bonded_node]:
+            if selected_node not in net_2.nets[bonded_node]:
                 print(f"Selected node not in bonded node's net: {selected_node}\n"
-                      "Bonded node's net: {self.net_A[bonded_node]}")
+                      "Bonded node's net: {self.net_a.nets[bonded_node]}")
                 valid = False
     return valid
+
+def compare_aux_dim_crd_dim(aux_dim: float | np.float64, crd_dim: float | np.float64,
+                            network_type: NetworkType, dim_string: str) -> bool:
+    if "lo" in dim_string:
+        if aux_dim > crd_dim:
+            print(f"aux_{network_type.value} {dim_string} greater than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            return False
+    elif "hi" in dim_string:
+        if aux_dim < crd_dim:
+            print(f"aux_{network_type.value} {dim_string} less than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            return False
+    elif aux_dim != crd_dim:
+        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
+    return True
+
+
+def get_graph(coords: np.array, nets: NetMCNets) -> nx.Graph:
+    graph = nx.Graph()
+    for selected_node, coord in enumerate(coords):
+        graph.add_node(selected_node, pos=coord)
+        for bonded_node in nets.nets[selected_node]:
+            graph.add_edge(selected_node, bonded_node)
+    return graph
 
 
 @dataclass
 class NetMCData:
-    aux_A: NetMCAux
-    aux_B: NetMCAux
-    crds_A: np.array
-    crds_B: np.array
-    net_A: NetMCNets
-    net_B: NetMCNets
-    dual_A: NetMCNets
-    dual_B: NetMCNets
+    aux_a: NetMCAux
+    aux_b: NetMCAux
+    crds_a: np.array
+    crds_b: np.array
+    net_a: NetMCNets
+    net_b: NetMCNets
+    dual_a: NetMCNets
+    dual_b: NetMCNets
 
     def __post_init__(self):
-        self.num_nodes_A = len(self.crds_A)
-        self.num_nodes_B = len(self.crds_B)
+        self.num_nodes_a = len(self.crds_a)
+        self.num_nodes_b = len(self.crds_b)
 
     def delete_node(self, deleted_node: int | np.int64, deleted_node_network: str):
         deleted_node_network = NetworkType(deleted_node_network)
         if deleted_node_network == NetworkType.A:
-            self.crds_A = np.delete(self.crds_A, deleted_node, axis=0)
-            self.num_nodes_A -= 1
+            self.crds_a = np.delete(self.crds_a, deleted_node, axis=0)
+            self.num_nodes_a -= 1
         elif deleted_node_network == NetworkType.B:
-            self.crds_B = np.delete(self.crds_B, deleted_node, axis=0)
-            self.num_nodes_B -= 1
-        self.aux_A.delete_node(deleted_node, deleted_node_network)
-        self.aux_B.delete_node(deleted_node, deleted_node_network)
-        self.net_A.delete_node(deleted_node, deleted_node_network)
-        self.net_B.delete_node(deleted_node, deleted_node_network)
-        self.dual_A.delete_node(deleted_node, deleted_node_network)
-        self.dual_B.delete_node(deleted_node, deleted_node_network)
+            self.crds_b = np.delete(self.crds_b, deleted_node, axis=0)
+            self.num_nodes_b -= 1
+        self.aux_a.delete_node(deleted_node, deleted_node_network)
+        self.aux_b.delete_node(deleted_node, deleted_node_network)
+        self.net_a.delete_node(deleted_node, deleted_node_network)
+        self.net_b.delete_node(deleted_node, deleted_node_network)
+        self.dual_a.delete_node(deleted_node, deleted_node_network)
+        self.dual_b.delete_node(deleted_node, deleted_node_network)
         self.refresh_auxs()
 
     def refresh_auxs(self):
-        self.aux_A.refresh(self.num_nodes_A, self.net_A.get_max_cnxs(), self.dual_A.get_max_cnxs(),
-                           get_dim(self.crds_A, 0, minimum=True), get_dim(self.crds_A, 0),
-                           get_dim(self.crds_A, 1, minimum=True), get_dim(self.crds_A, 1))
-        self.aux_B.refresh(self.num_nodes_B, self.net_B.get_max_cnxs(), self.dual_B.get_max_cnxs(),
-                           get_dim(self.crds_B, 0, minimum=True), get_dim(self.crds_B, 0),
-                           get_dim(self.crds_B, 1, minimum=True), get_dim(self.crds_B, 1))
+        self.aux_a.refresh(self.num_nodes_a, self.net_a.get_max_cnxs(), self.dual_a.get_max_cnxs(),
+                           get_dim(self.crds_a, 0, minimum=True), get_dim(self.crds_a, 0),
+                           get_dim(self.crds_a, 1, minimum=True), get_dim(self.crds_a, 1))
+        self.aux_b.refresh(self.num_nodes_b, self.net_b.get_max_cnxs(), self.dual_b.get_max_cnxs(),
+                           get_dim(self.crds_b, 0, minimum=True), get_dim(self.crds_b, 0),
+                           get_dim(self.crds_b, 1, minimum=True), get_dim(self.crds_b, 1))
+    
+    def check(self):
+        # I continue the function despite invalid data so that I can see all the issues
+        valid = True
+        if not self.check_nets():
+            print("Inconsistent nets")
+            valid = False
+        else: print("Nets valid!")
+        if not self.check_num_nodes():
+            print("Inconsistent number of nodes")
+            valid = False
+        else: print("Number of nodes valid!")
+        if not self.check_dims():
+            print("Erroneous dimensions")
+            valid = False
+        else: print("Dimensions valid!")
+        return valid
+
+    def check_num_nodes(self):
+        print("Checking number of nodes...")
+        valid = True
+        if self.aux_a.num_nodes != len(self.crds_a):
+            print("Inconsistent number of nodes in aux_a and crds_a")
+            valid = False
+        if self.aux_b.num_nodes != len(self.crds_b):
+            print("Inconsistent number of nodes in aux_b and crds_b")
+            valid = False
+        return valid
+
+    def check_dims(self):
+        print("Checking dimensions...")
+        valid = True
+        if not compare_aux_dim_crd_dim(self.aux_a.xlo, get_dim(self.crds_a, 0, minimum=True), NetworkType.A, "xlo"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_a.xhi, get_dim(self.crds_a, 0), NetworkType.A, "xhi"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_a.ylo, get_dim(self.crds_a, 1, minimum=True), NetworkType.A, "ylo"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_a.yhi, get_dim(self.crds_a, 1), NetworkType.A, "yhi"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_b.xlo, get_dim(self.crds_b, 0, minimum=True), NetworkType.B, "xlo"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_b.xhi, get_dim(self.crds_b, 0), NetworkType.B, "xhi"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_b.ylo, get_dim(self.crds_b, 1, minimum=True), NetworkType.B, "ylo"):
+            valid = False
+        if not compare_aux_dim_crd_dim(self.aux_b.yhi, get_dim(self.crds_b, 1), NetworkType.B, "yhi"):
+            valid = False
+        return valid
+    
 
     def check_nets(self):
         valid = True
         print("Checking nets...")
-        if not check_nets(self.net_A, self.net_A):
+        if not check_nets(self.net_a, self.net_a):
             print("A-A connections invalid")
             valid = False
-        if check_nets(self.net_B, self.net_B):
-            print("B-B connections valid")
+        print("A-A connections valid")
+        if not check_nets(self.net_b, self.net_b):
+            print("B-B connections invalid")
             valid = False
-        if check_nets(self.dual_A, self.dual_B):
+        print("B-B connections valid")
+        if not check_nets(self.dual_a, self.dual_b):
             print("A-B dual connections valid")
             valid = False
-        if check_nets(self.dual_B, self.dual_A):
-            print("A-B dual connections valid")
+        print("A-B dual connections valid")
+        if not check_nets(self.dual_b, self.dual_a):
+            print("B-A dual connections valid")
             valid = False
+        print("B-A dual connections valid")
         if not valid:
             raise ValueError("Nets not valid")
         else:
@@ -110,25 +187,34 @@ class NetMCData:
 
     @staticmethod
     def import_data(path: Path, prefix: str = "default") -> NetMCData:
-        aux_A = NetMCAux.from_file(path.joinpath(f"{prefix}_A_aux.dat"))
-        aux_B = NetMCAux.from_file(path.joinpath(f"{prefix}_B_aux.dat"))
-        crds_A = np.genfromtxt(path.joinpath(f"{prefix}_A_crds.dat"))
-        crds_B = np.genfromtxt(path.joinpath(f"{prefix}_B_crds.dat"))
-        net_A = NetMCNets.from_file(path.joinpath(f"{prefix}_A_net.dat"))
-        net_B = NetMCNets.from_file(path.joinpath(f"{prefix}_B_net.dat"))
-        dual_A = NetMCNets.from_file(path.joinpath(f"{prefix}_A_dual.dat"))
-        dual_B = NetMCNets.from_file(path.joinpath(f"{prefix}_B_dual.dat"))
-        return NetMCData(aux_A, aux_B, crds_A, crds_B, net_A, net_B, dual_A, dual_B)
+        aux_a = NetMCAux.from_file(path.joinpath(f"{prefix}_A_aux.dat"))
+        aux_b = NetMCAux.from_file(path.joinpath(f"{prefix}_B_aux.dat"))
+        crds_a = np.genfromtxt(path.joinpath(f"{prefix}_A_crds.dat"))
+        crds_b = np.genfromtxt(path.joinpath(f"{prefix}_B_crds.dat"))
+        net_a = NetMCNets.from_file(path.joinpath(f"{prefix}_A_net.dat"))
+        net_b = NetMCNets.from_file(path.joinpath(f"{prefix}_B_net.dat"))
+        dual_a = NetMCNets.from_file(path.joinpath(f"{prefix}_A_dual.dat"))
+        dual_b = NetMCNets.from_file(path.joinpath(f"{prefix}_B_dual.dat"))
+        return NetMCData(aux_a, aux_b, crds_a, crds_b, net_a, net_b, dual_a, dual_b)
 
     def export_all(self, output_path: Path, prefix: str = "default"):
-        self.aux_A.export(output_path, prefix)
-        self.aux_B.export(output_path, prefix)
-        np.savetxt(output_path.joinpath(f"{prefix}_A_crds.dat"), self.crds_A, fmt="%-19.6f")
-        np.savetxt(output_path.joinpath(f"{prefix}_B_crds.dat"), self.crds_B, fmt="%-19.6f")
-        self.net_A.export(output_path, prefix)
-        self.net_B.export(output_path, prefix)
-        self.dual_A.export(output_path, prefix)
-        self.dual_B.export(output_path, prefix)
+        self.aux_a.export(output_path, prefix)
+        self.aux_b.export(output_path, prefix)
+        np.savetxt(output_path.joinpath(f"{prefix}_A_crds.dat"), self.crds_a, fmt="%-19.6f")
+        np.savetxt(output_path.joinpath(f"{prefix}_B_crds.dat"), self.crds_b, fmt="%-19.6f")
+        self.net_a.export(output_path, prefix)
+        self.net_b.export(output_path, prefix)
+        self.dual_a.export(output_path, prefix)
+        self.dual_b.export(output_path, prefix)
+
+    def get_graph(self, network_type: NetworkType) -> nx.graph:
+        if network_type == NetworkType.A:
+            return get_graph(self.crds_a, self.net_a)
+        elif network_type == NetworkType.B:
+            return get_graph(self.crds_b, self.net_b)
+        raise ValueError("Invalid network type")
+        
+
 
 
 @dataclass
@@ -235,7 +321,7 @@ class NetMCAux:
             aux_file.write(f"{self.xlo:<20.6f}{self.xhi:<20.6f}\n")
             aux_file.write(f"{self.ylo:<20.6f}{self.yhi:<20.6f}\n")
 
-    def delete_node(self, deleted_node, deleted_node_network):
+    def delete_node(self, deleted_node_network):
         if deleted_node_network == self.network_type:
             self.num_nodes -= 1
 
@@ -247,7 +333,10 @@ class NetMCAux:
             max_cnxs, max_cnxs_dual = int(cnxs[0]), int(cnxs[1])
             geom_code = aux_file.readline().strip()
         dims = np.genfromtxt(path, skip_header=3, dtype=np.float64)
-        xlo, xhi, ylo, yhi = dims[0][0], dims[0][1], dims[1][0], dims[1][1]
+        # This is the correct format for the aux dimensions!!
+        #           xhi         yhi
+        #           xlo         ylo
+        xhi, yhi, xlo, ylo = dims[0][0], dims[0][1], dims[1][0], dims[1][1]
         network_type = NetworkType(path.name[-9])
         prefix = path.name[:11]
         return NetMCAux(num_nodes=num_nodes, max_cnxs=max_cnxs,
@@ -256,13 +345,13 @@ class NetMCAux:
                         xlo=xlo, xhi=xhi, ylo=ylo, yhi=yhi,
                         network_type=network_type, prefix=prefix)
 
-    def refresh(self, num_nodes: int | np.int64, max_cnxs_A: int | np.int64,
-                max_cnxs_B: int | np.int64, xlo: float | np.float64,
+    def refresh(self, num_nodes: int | np.int64, max_cnxs_a: int | np.int64,
+                max_cnxs_b: int | np.int64, xlo: float | np.float64,
                 xhi: float | np.float64, ylo: float | np.float64,
                 yhi: float | np.float64):
         self.num_nodes = num_nodes
-        self.max_cnxs_A = max_cnxs_A
-        self.max_cnxs_B = max_cnxs_B
+        self.max_cnxs_a = max_cnxs_a
+        self.max_cnxs_b = max_cnxs_b
         self.xlo = xlo
         self.xhi = xhi
         self.ylo = ylo

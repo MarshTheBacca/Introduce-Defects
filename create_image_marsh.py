@@ -12,6 +12,21 @@ from utils import NetMCAux, NetMCNets, NetworkType
 from typing import TypeAlias
 from enum import Enum
 
+# The comment he's included in C.data 'Atoms' line is wrong, the atoms are being stored as regular atoms, not molecules
+# since there is a missing molecule ID column.
+
+# Comment for Masses in C.data is incorrect, should be 'C' not 'Si'
+
+# For some reason, he's written Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with different molecule IDs
+
+# In C.data, Si.data, all atoms have a z coordinate of 0
+# In SiO2.data, all Si atoms alternate between z = 5 and z = 11.081138669036534
+# In SiO2.data, the first 1/3 of O atoms have z = 8.040569334518267, then they alternate between z = 3.9850371001619402, z = 12.096101568874595
+# In Si2O3.data, all atoms have z = 5
+
+# Need to have a look at his C++ source code to see how *.data, *.in and *.lammps are being used
+# And therefore if any corrections are in order for how he writes these files.
+
 Network: TypeAlias = dict[int, dict]
 
 class ConnectionType(Enum):
@@ -39,7 +54,6 @@ def left_click(coordinate: np.ndarray, graph_a: nx.graph, network_a: Network, ne
                deleted_nodes: np.ndarray, broken_rings: np.ndarray, undercoordinated_nodes: np.ndarray,
                image: np.ndarray):
     print("Left click detected at coordinates: ", coordinate)
-    print(graph_a)
     node_pos = nx.get_node_attributes(graph_a, "pos")
     close_node = get_close_node(node_pos, coordinate)
     if close_node is None:
@@ -119,10 +133,7 @@ def draw_cnxs(image: np.ndarray, graph: nx.graph,
 def refresh_new_cnxs(network_a: Network, network_b: Network,
                      graph_a: nx.graph, graph_b: nx.graph, atoms: np.ndarray,
                      undercoordinated_nodes: np.ndarray, image) -> None:
-    print("RNC")
-    print(graph_a)
     graph_a = update_graph(graph_a, network_a)
-    print(graph_a)
     graph_b = update_graph(graph_b, network_b)
 
     draw_nodes(image, graph_a, (255, 0, 0), -1)
@@ -147,8 +158,6 @@ def refresh_new_cnxs(network_a: Network, network_b: Network,
 
     for i in range(0, len(atoms) - 1, 2):
         draw_line(image, network_a[atoms[i]]["crds"], network_a[atoms[i + 1]]["crds"], (1, 1, 1), 5)
-    print("RNC END")
-    print(graph_a)
 
 
 def np_remove_elements(array: np.ndarray, elements_to_remove: np.ndarray) -> np.ndarray:
@@ -550,67 +559,6 @@ class DrawLineWidget:
             print("Broken nodes detected, exiting...")
             exit(1)
 
-    def local_remapped_node(self, rings_to_merge, local_nodes, local_dual):
-        # ids of merged ring
-        merged_ring = min(rings_to_merge)
-        # we define the new ring as the lowest ring count of all rings to merge
-        print('New Ring id   : ', merged_ring)
-        # Rings connected to new merged ring
-        connected_rings = []
-        for ring in rings_to_merge:
-            for connected in local_dual[ring]['net']:
-                if int(connected) not in rings_to_merge and int(connected) not in connected_rings:
-                    connected_rings.append(connected)
-        print("Connected Rings : ", connected_rings)
-
-        # update merged ring connections
-        local_dual[merged_ring]['net'] = np.asarray(connected_rings)
-
-        self.rings_to_remove = rings_to_merge.copy()
-        self.rings_to_remove.remove(merged_ring)
-
-        # remove connections to unmerged rings
-        for ring in connected_rings:
-            for ring_to_remove in self.rings_to_remove:
-                if ring_to_remove in local_dual[ring]['net']:
-                    local_dual[ring]["net"] = np_remove_elements(local_dual[ring]["net"], ring_to_remove)
-                    if merged_ring not in local_dual[ring]["net"]:
-                        local_dual[ring]["net"] = np.append(local_dual[ring]["net"], merged_ring)
-
-        connected_nodes = []
-
-        # replace all ring-node connections
-        for ring in rings_to_merge:
-            for node in local_dual[ring]['dual']:
-                if node not in connected_nodes:
-                    connected_nodes.append(node)
-        local_dual[merged_ring]['dual'] = np.asarray(connected_nodes)
-
-        # replace all node-ring connections
-        for node in local_nodes:
-            for ring in local_nodes[node]['dual']:
-                if ring in rings_to_merge:
-                    index = np.nonzero(local_nodes[node]['dual'] == ring)[0][0]
-                    local_nodes[node]['dual'][index] = merged_ring
-
-        # update in networkx
-
-        new_ring_crds = local_dual[merged_ring]['crds']
-        for ring in rings_to_merge:
-            if ring != merged_ring:
-                new_ring_crds = np.add(new_ring_crds, local_dual[ring]['crds'])
-
-        new_crds = np.divide(new_ring_crds, len(rings_to_merge))
-        local_dual[merged_ring]['crds'] = new_crds
-
-        for ring in rings_to_merge:
-            if ring != merged_ring:
-                print('deleting : ', int(ring))
-                del local_dual[ring]
-
-        print("Merged Rings : ", rings_to_merge)
-        return merged_ring
-
     def extract_coordinates(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             print("EC")
@@ -661,14 +609,6 @@ class DrawLineWidget:
             print('############ Initial Broken Rings : ', self.broken_rings)
             print('>>>>>>>>>>>> Initial Undercoordinated : ', self.undercoordinated)
             # SPLIT HERE TO N OPTIONS
-            self.undercoordinated_copy = self.undercoordinated.copy()
-            self.broken_rings_copy = self.broken_rings.copy()
-
-            self.undercoordinated_copy_2 = self.undercoordinated.copy()
-            self.broken_rings_copy = self.broken_rings.copy()
-
-            self.cloneA = self.original_image.copy()
-            self.cloneB = self.original_image.copy()
 
             if check_path(starting_node, atom_a, self.network_a_copy, self.undercoordinated):
                 local_nodes, local_undercoordinated, local_broken_rings = create_initial_path(starting_node, atom_a, atoms,
@@ -708,12 +648,12 @@ def make_crds_marks_bilayer(folder, intercept_2, triangle_raft, bilayer, common_
     AREA_SCALING = np.sqrt(area)
     UNITS_SCALING = 1 / 0.52917721090380
     si_si_distance = UNITS_SCALING * 1.609 * np.sqrt((32.0 / 9.0))
-    si_o_length = UNITS_SCALING * 1.609
+    si_o_length = UNITS_SCALING * 1.609 
     o_o_distance = UNITS_SCALING * 1.609 * np.sqrt((8.0 / 3.0))
     h = UNITS_SCALING * np.sin((19.5 / 180) * np.pi) * 1.609
 
-    displacement_vectors_norm = np.asarray([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 3]])
-    displacement_vectors_factored = np.multiply(displacement_vectors_norm, 0.5)
+    displacement_vectors_norm = np.array([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 3]])
+    displacement_vectors_factored = displacement_vectors_norm * 0.5
 
     with open(folder + '/testA_a_aux.dat', 'r') as f:
         n_nodes = np.genfromtxt(f, max_rows=1)
@@ -887,7 +827,7 @@ def make_crds_marks_bilayer(folder, intercept_2, triangle_raft, bilayer, common_
             if abs(grading[selection]) < 0.1:
 
                 unperturbed_oxygen_0_crds = np.add(atom_1_crds, np.divide(v, 2))
-                oxygen_0_crds = np.add(unperturbed_oxygen_0_crds, displacement_vectors_factored[selection, :])
+                oxygen_0_crds = np.add(unperturbed_oxygen_0_crds, displacement_vectors_factored[selection])
 
             else:
                 oxygen_0_crds = np.add(atom_1_crds, np.divide(v, 2))

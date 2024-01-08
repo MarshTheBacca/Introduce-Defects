@@ -1,3 +1,4 @@
-from .netmc_data import NetMCData, NetMCAux, NetMCNets, NetworkType
+from .netmc_data import NetMCData, NetMCAux, NetMCNets, network_type
+from .nodes import Node
 
 
