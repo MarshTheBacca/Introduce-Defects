@@ -10,7 +10,6 @@ import collections
 HEXAGON_SIDE_LENGTH = 1
 HEXAGON_SMALL_HEGIHT = HEXAGON_SIDE_LENGTH / 2
 
-import numpy as np
 
 def sort_dictionary(dictionary: dict, func: callable) -> dict:
     return {key: value for key, value in sorted(dictionary.items(), key=func)}
@@ -45,7 +44,8 @@ def check_coordination(graph: nx.graph, target_coordination: int) -> bool:
         if len(list(graph.neighbors(node))) != target_coordination:
             valid = False
             num_not_target += 1
-    print(f"{num_not_target} nodes have coordination different from {target_coordination}.")
+    print(f"{num_not_target} nodes have coordination different from {
+          target_coordination}.")
     return valid
 
 
@@ -63,13 +63,16 @@ def delete_uncommon_neighbours(graph: nx.graph, edge_nodes: list[int]) -> list[i
             edge_nodes.remove(node)
     return edge_nodes
 
+
 def identify_edge_nodes(coords: np.ndarray, axis: int, compare_to: float) -> list[int]:
     edge_nodes = {}
     for node, coord in enumerate(coords):
         if np.isclose(coord[axis], compare_to, rtol=1e-2):
             edge_nodes[node] = coord
-    edge_nodes = list(sort_dictionary(edge_nodes, lambda item: item[1][(axis + 1) % 2]).keys())
+    edge_nodes = list(sort_dictionary(
+        edge_nodes, lambda item: item[1][(axis + 1) % 2]).keys())
     return edge_nodes
+
 
 def connect_pbc(graph: nx.Graph, coords: np.array, colour: str = "green") -> nx.Graph:
     bottom_nodes = identify_edge_nodes(coords, 1, coord_dims[1][0])
@@ -79,14 +82,17 @@ def connect_pbc(graph: nx.Graph, coords: np.array, colour: str = "green") -> nx.
 
     for bottom_node, top_node in zip(bottom_nodes, top_nodes):
         if len(list(graph.neighbors(bottom_node))) != len(list(graph.neighbors(top_node))):
-            raise ValueError(f"Bottom node {bottom_node} has {len(list(graph.neighbors(bottom_node)))} neighbors, but top node {top_node} has {len(list(graph.neighbors(top_node)))} neighbors.")
+            raise ValueError(f"Bottom node {bottom_node} has {len(list(graph.neighbors(bottom_node)))} neighbors, but top node {
+                             top_node} has {len(list(graph.neighbors(top_node)))} neighbors.")
     bottom_top_coordination = len(list(graph.neighbors(bottom_nodes[0])))
-    print(f"Bottom and top nodes have coordination of {bottom_top_coordination}.")
+    print(f"Bottom and top nodes have coordination of {
+          bottom_top_coordination}.")
 
     for i in range(len(bottom_nodes)):
         graph.add_edge(bottom_nodes[i], top_nodes[i], color=colour)
         if bottom_top_coordination == 1:
-            graph.add_edge(bottom_nodes[(i+1)%len(bottom_nodes)], top_nodes[i], color=colour)
+            graph.add_edge(
+                bottom_nodes[(i+1) % len(bottom_nodes)], top_nodes[i], color=colour)
 
     left_nodes = delete_uncommon_neighbours(graph, left_nodes)
     right_nodes = delete_uncommon_neighbours(graph, right_nodes)
@@ -95,10 +101,12 @@ def connect_pbc(graph: nx.Graph, coords: np.array, colour: str = "green") -> nx.
         graph.add_edge(left_nodes[i], right_nodes[i], color=colour)
     return graph
 
+
 def generate_hexagonal_lattice(dimensions: np.array, bond_length: float) -> np.ndarray:
     horizontal_spacing = bond_length * np.sqrt(3)
     vertical_spacing = bond_length / 2
-    box_size = np.array([dimensions[0][1] - dimensions[0][0], dimensions[1][1] - dimensions[1][0]])
+    box_size = np.array([dimensions[0][1] - dimensions[0]
+                        [0], dimensions[1][1] - dimensions[1][0]])
     num_nodes_x = int(box_size[0] / horizontal_spacing) + 1
     num_nodes_y = int(box_size[1] / vertical_spacing) + 1
     if num_nodes_x % 2 != 0:
@@ -110,10 +118,12 @@ def generate_hexagonal_lattice(dimensions: np.array, bond_length: float) -> np.n
         for j in range(num_nodes_y):
             # if (j - 1) % 3 != 0: # This line for Olly's style
             if j % 3 != 0:
-                x = i * horizontal_spacing + dimensions[0][0] + (j % 2) * horizontal_spacing / 2
+                x = i * horizontal_spacing + \
+                    dimensions[0][0] + (j % 2) * horizontal_spacing / 2
                 y = j * vertical_spacing + dimensions[1][0]
                 coordinates.append((x, y))
     return np.array(coordinates)
+
 
 cwd = Path.cwd()
 box_size = np.array([[0, 5], [0, 5]])
@@ -133,11 +143,13 @@ check_coordination(graph, 3)
 point = np.array([box_size[0][0], box_size[1][0]])
 closest_node, distance = find_closest_node(coords, point)
 
-print(f"The closest node to {point} is {closest_node} at a distance of {np.round(distance, 5)}.")
+print(f"The closest node to {point} is {
+      closest_node} at a distance of {np.round(distance, 5)}.")
 
 # Plot the graph
 pos = nx.get_node_attributes(graph, "pos")
-edge_colours = [graph[node_1][node_2]["color"] for node_1, node_2 in graph.edges()]
+edge_colours = [graph[node_1][node_2]["color"]
+                for node_1, node_2 in graph.edges()]
 label_pos = {node: (x + 0.1, y + 0.1) for node, (x, y) in pos.items()}
 nx.draw(graph, pos, node_size=15, node_color="blue", edge_color=edge_colours)
 nx.draw_networkx_labels(graph, label_pos)

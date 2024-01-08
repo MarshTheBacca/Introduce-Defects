@@ -10,6 +10,7 @@ cwd = Path.cwd()
 data = NetMCData.import_data(cwd.joinpath("test_input"), prefix="test")
 graph = data.get_graph(NetworkType.A)
 
+
 def find_closest_node(coords: np.array, point: np.array) -> tuple[np.array, float]:
     tree = KDTree(coords)
     distance, index = tree.query(point)
@@ -20,7 +21,8 @@ def find_closest_node(coords: np.array, point: np.array) -> tuple[np.array, floa
 point = np.array([0, 0])
 closest_node, distance = find_closest_node(data.crds_a, point)
 
-print(f"The closest node to {point} is {closest_node} at a distance of {distance}.")
+print(f"The closest node to {point} is {
+      closest_node} at a distance of {distance}.")
 
 pos = nx.get_node_attributes(graph, "pos")
 nx.draw(graph, pos, node_size=10, node_color="lightblue", with_labels=False)

@@ -48,18 +48,22 @@ def check_nets(net_1: list, net_2: list) -> bool:
                 valid = False
     return valid
 
+
 def compare_aux_dim_crd_dim(aux_dim: float | np.float64, crd_dim: float | np.float64,
                             network_type: NetworkType, dim_string: str) -> bool:
     if "lo" in dim_string:
         if aux_dim > crd_dim:
-            print(f"aux_{network_type.value} {dim_string} greater than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            print(f"aux_{network_type.value} {dim_string} greater than crds_{
+                  network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
             return False
     elif "hi" in dim_string:
         if aux_dim < crd_dim:
-            print(f"aux_{network_type.value} {dim_string} less than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
+            print(f"aux_{network_type.value} {dim_string} less than crds_{
+                  network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
             return False
     elif aux_dim != crd_dim:
-        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
+        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{
+              network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
     return True
 
 
@@ -105,27 +109,32 @@ class NetMCData:
 
     def refresh_auxs(self):
         self.aux_a.refresh(self.num_nodes_a, self.net_a.get_max_cnxs(), self.dual_a.get_max_cnxs(),
-                           get_dim(self.crds_a, 0, minimum=True), get_dim(self.crds_a, 0),
+                           get_dim(self.crds_a, 0, minimum=True), get_dim(
+                               self.crds_a, 0),
                            get_dim(self.crds_a, 1, minimum=True), get_dim(self.crds_a, 1))
         self.aux_b.refresh(self.num_nodes_b, self.net_b.get_max_cnxs(), self.dual_b.get_max_cnxs(),
-                           get_dim(self.crds_b, 0, minimum=True), get_dim(self.crds_b, 0),
+                           get_dim(self.crds_b, 0, minimum=True), get_dim(
+                               self.crds_b, 0),
                            get_dim(self.crds_b, 1, minimum=True), get_dim(self.crds_b, 1))
-    
+
     def check(self):
         # I continue the function despite invalid data so that I can see all the issues
         valid = True
         if not self.check_nets():
             print("Inconsistent nets")
             valid = False
-        else: print("Nets valid!")
+        else:
+            print("Nets valid!")
         if not self.check_num_nodes():
             print("Inconsistent number of nodes")
             valid = False
-        else: print("Number of nodes valid!")
+        else:
+            print("Number of nodes valid!")
         if not self.check_dims():
             print("Erroneous dimensions")
             valid = False
-        else: print("Dimensions valid!")
+        else:
+            print("Dimensions valid!")
         return valid
 
     def check_num_nodes(self):
@@ -159,7 +168,6 @@ class NetMCData:
         if not compare_aux_dim_crd_dim(self.aux_b.yhi, get_dim(self.crds_b, 1), NetworkType.B, "yhi"):
             valid = False
         return valid
-    
 
     def check_nets(self):
         valid = True
@@ -200,8 +208,10 @@ class NetMCData:
     def export_all(self, output_path: Path, prefix: str = "default"):
         self.aux_a.export(output_path, prefix)
         self.aux_b.export(output_path, prefix)
-        np.savetxt(output_path.joinpath(f"{prefix}_A_crds.dat"), self.crds_a, fmt="%-19.6f")
-        np.savetxt(output_path.joinpath(f"{prefix}_B_crds.dat"), self.crds_b, fmt="%-19.6f")
+        np.savetxt(output_path.joinpath(
+            f"{prefix}_A_crds.dat"), self.crds_a, fmt="%-19.6f")
+        np.savetxt(output_path.joinpath(
+            f"{prefix}_B_crds.dat"), self.crds_b, fmt="%-19.6f")
         self.net_a.export(output_path, prefix)
         self.net_b.export(output_path, prefix)
         self.dual_a.export(output_path, prefix)
@@ -213,8 +223,6 @@ class NetMCData:
         elif network_type == NetworkType.B:
             return get_graph(self.crds_b, self.net_b)
         raise ValueError("Invalid network type")
-        
-
 
 
 @dataclass
@@ -244,7 +252,8 @@ class NetMCNets:
     @staticmethod
     def from_file(path: Path, skip_header: int = 0) -> NetMCNets:
         with open(path, "r") as net_file:
-            nets = [np.array(line.strip().split(), dtype=np.int64) for line in net_file]
+            nets = [np.array(line.strip().split(), dtype=np.int64)
+                    for line in net_file]
         if path.name[-7:-4] == "net":
             network_type = NetworkType(path.name[-9])
             if network_type == NetworkType.A:

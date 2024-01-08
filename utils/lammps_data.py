@@ -7,6 +7,7 @@ import collections
 from typing import Optional
 from .netmc_data import NetMCData, NetworkType
 
+
 def get_angles(selected_node: int, bonded_nodes: np.ndarray) -> list[tuple[int, int, int]]:
     angles, num_bonded_nodes = [], len(bonded_nodes)
     if num_bonded_nodes < 2:
@@ -28,7 +29,8 @@ class LAMMPSData:
 
     def __post_init__(self):
         if not self.check_coords():
-            raise ValueError("The coordinates of the atoms are not consistent.")
+            raise ValueError(
+                "The coordinates of the atoms are not consistent.")
         self.num_atoms = len(self.atoms)
         self.num_bonds = len(self.bonds)
         self.num_angles = len(self.angles)
@@ -40,13 +42,15 @@ class LAMMPSData:
         self.num_angle_types = len(self.angle_labels)
         if self.dimensions is None:
             self.dimensions = self.get_dimensions()
-    
+
     def check_coords(self) -> bool:
         valid = True
-        most_common_coord_dim = collections.Counter(atom.coord_dim for atom in self.atoms).most_common(1)[0][0]
+        most_common_coord_dim = collections.Counter(
+            atom.coord_dim for atom in self.atoms).most_common(1)[0][0]
         for atom in self.atoms:
             if atom.coord_dim != most_common_coord_dim:
-                print(f"Atom {atom.id} has {atom.coord_dim} dimensions, but {most_common_coord_dim} are expected.")
+                print(f"Atom {atom.id} has {atom.coord_dim} dimensions, but {
+                      most_common_coord_dim} are expected.")
                 valid = False
         return valid
 
@@ -66,25 +70,51 @@ class LAMMPSData:
         bonds = []
         angles = []
         if network_type == NetworkType.A:
-            node_id = 1
-            bond_id = 1
-            angle_id = 1
-            for coord, net in zip(netmc_data.crds_a, netmc_data.net_a):
-                atoms.append(LAMMPSAtom(id=node_id, label=atom_lable, coord=coord))
-                for bonded_node in net:
-                    bonds.append(LAMMPSBond(id=bond_id, label=f"{atom_lable}-{atom_lable}", atom_ids=(node_id, bonded_node + 1)))
-                    bond_id += 1
-                for angle in get_angles(node_id, net):
-                    angles.append(LAMMPSAngle(id=angle_id, label=f"{atom_lable}-{atom_lable}-{atom_lable}", atom_ids=angle))
-                    angle_id += 1
-                node_id += 1
-            return LAMMPSData(atoms=atoms, bonds=bonds, angles=angles, dimensions=dimensions)
+            crds = netmc_data.crds_a
+            net = netmc_data.net_a
+        elif network_type == NetworkType.B:
+            crds = netmc_data.crds_b
+            net = netmc_data.net_b
+        node_id = 1
+        bond_id = 1
+        angle_id = 1
+        for coord, net in zip(crds, net):
+            atoms.append(LAMMPSAtom(id=node_id, label=atom_lable, coord=coord))
+            for bonded_node in net:
+                bonds.append(LAMMPSBond(id=bond_id, label=f"{
+                             atom_lable}-{atom_lable}", atom_ids=(node_id, bonded_node + 1)))
+                bond_id += 1
+            for angle in get_angles(node_id, net):
+                angles.append(LAMMPSAngle(id=angle_id, label=f"{
+                              atom_lable}-{atom_lable}-{atom_lable}", atom_ids=angle))
+                angle_id += 1
+            node_id += 1
+        return LAMMPSData(atoms=atoms, bonds=bonds, angles=angles, dimensions=dimensions)
+
+    def add_atom(self, atom: LAMMPSAtom) -> None:
+        self.atoms.append(atom)
+        self.num_atoms += 1
+        self.atom_labels.add(atom.label)
+        self.num_atom_types = len(self.atom_labels)
+
+    def add_bond(self, bond: LAMMPSBond) -> None:
+        self.bonds.append(bond)
+        self.num_bonds += 1
+        self.bond_labels.add(bond.label)
+        self.num_bond_types = len(self.bond_labels)
+
+    def add_angle(self, angle: LAMMPSAngle) -> None:
+        self.angles.append(angle)
+        self.num_angles += 1
+        self.angle_labels.add(angle.label)
+        self.num_angle_types = len(self.angle_labels)
 
 
 @dataclass
 class LAMMPSDataEntry:
     id: int
     label: str
+
 
 @dataclass
 class LAMMPSAtom(LAMMPSDataEntry):
@@ -94,9 +124,11 @@ class LAMMPSAtom(LAMMPSDataEntry):
         self.style = "atomic"
         self.coord_dim = len(self.coord)
 
+
 @dataclass
 class LAMMPSMolecule(LAMMPSAtom):
     molecule_id: int
+
     def __post_init__(self):
         super().__post_init__()
         self.style = "molecular"
@@ -106,7 +138,7 @@ class LAMMPSMolecule(LAMMPSAtom):
 class LAMMPSBond(LAMMPSDataEntry):
     atom_ids: tuple[int, int]
 
+
 @dataclass
 class LAMMPSAngle(LAMMPSDataEntry):
     atom_ids: tuple[int, int, int]
-    
