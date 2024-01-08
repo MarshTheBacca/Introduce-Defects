@@ -1,13 +1,15 @@
 from __future__ import annotations
-import numpy as np
-from pathlib import Path
-from enum import Enum
-from dataclasses import dataclass, field
-import collections
-from typing import Optional, IO
-from .netmc_data import NetMCData, NetworkType
-from abc import ABC, abstractmethod
 
+import collections
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import IO, Optional
+
+import numpy as np
+
+from .netmc_data import NetMCData, NetworkType
 
 LAMMPS_DEFAULT_DESCRIPTION = "Written by lammps_data.py made by Marshall Hunt"
 
