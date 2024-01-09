@@ -29,7 +29,7 @@ def find_closest_node(coords: np.array, point: np.array) -> np.array:
 def connect_nearest_neighbours(coords: np.array, graph: nx.Graph, target_distance: float,
                                num_neighbours: int, colour: str = "black") -> nx.Graph:
     tree = KDTree(coords)
-    distances, indices = tree.query(coords, k=num_neighbours+1)
+    distances, indices = tree.query(coords, k=num_neighbours + 1)
     for node_index, neighbors in enumerate(indices):
         for neighbor, distance in zip(neighbors, distances[node_index]):
             if node_index != neighbor and np.isclose(distance, target_distance, rtol=1e-2):
@@ -44,8 +44,7 @@ def check_coordination(graph: nx.graph, target_coordination: int) -> bool:
         if len(list(graph.neighbors(node))) != target_coordination:
             valid = False
             num_not_target += 1
-    print(f"{num_not_target} nodes have coordination different from {
-          target_coordination}.")
+    print(f"{num_not_target} nodes have coordination different from {target_coordination}.")
     return valid
 
 
@@ -82,17 +81,15 @@ def connect_pbc(graph: nx.Graph, coords: np.array, colour: str = "green") -> nx.
 
     for bottom_node, top_node in zip(bottom_nodes, top_nodes):
         if len(list(graph.neighbors(bottom_node))) != len(list(graph.neighbors(top_node))):
-            raise ValueError(f"Bottom node {bottom_node} has {len(list(graph.neighbors(bottom_node)))} neighbors, but top node {
-                             top_node} has {len(list(graph.neighbors(top_node)))} neighbors.")
+            raise ValueError(f"Bottom node {bottom_node} has {len(list(graph.neighbors(bottom_node)))} neighbors, but top node {top_node} has {len(list(graph.neighbors(top_node)))} neighbors.")
     bottom_top_coordination = len(list(graph.neighbors(bottom_nodes[0])))
-    print(f"Bottom and top nodes have coordination of {
-          bottom_top_coordination}.")
+    print(f"Bottom and top nodes have coordination of {bottom_top_coordination}.")
 
     for i in range(len(bottom_nodes)):
         graph.add_edge(bottom_nodes[i], top_nodes[i], color=colour)
         if bottom_top_coordination == 1:
             graph.add_edge(
-                bottom_nodes[(i+1) % len(bottom_nodes)], top_nodes[i], color=colour)
+                bottom_nodes[(i + 1) % len(bottom_nodes)], top_nodes[i], color=colour)
 
     left_nodes = delete_uncommon_neighbours(graph, left_nodes)
     right_nodes = delete_uncommon_neighbours(graph, right_nodes)
@@ -143,13 +140,11 @@ check_coordination(graph, 3)
 point = np.array([box_size[0][0], box_size[1][0]])
 closest_node, distance = find_closest_node(coords, point)
 
-print(f"The closest node to {point} is {
-      closest_node} at a distance of {np.round(distance, 5)}.")
+print(f"The closest node to {point} is {closest_node} at a distance of {np.round(distance, 5)}.")
 
 # Plot the graph
 pos = nx.get_node_attributes(graph, "pos")
-edge_colours = [graph[node_1][node_2]["color"]
-                for node_1, node_2 in graph.edges()]
+edge_colours = [graph[node_1][node_2]["color"] for node_1, node_2 in graph.edges()]
 label_pos = {node: (x + 0.1, y + 0.1) for node, (x, y) in pos.items()}
 nx.draw(graph, pos, node_size=15, node_color="blue", edge_color=edge_colours)
 nx.draw_networkx_labels(graph, label_pos)

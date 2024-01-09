@@ -1306,7 +1306,7 @@ class DrawLineWidget:
                     cv2.imshow("image", self.clone)
                     cv2.imshow('image', draw_line_widget.show_image())
                     cv2.waitKey(1)
-                    self.write_local(local_nodes, local_dual,   )
+                    self.write_local(local_nodes, local_dual,)
 
                 return
 
@@ -1316,11 +1316,8 @@ class DrawLineWidget:
         return self.clone
 
 
-def old_make_crds_marks_bilayer(folder, intercept_2, triangle_raft, bilayer):
+def old_make_crds_marks_bilayer(folder, intercept_1, triangle_raft, bilayer):
     area = 1.00
-    intercept_1 = intercept_2
-    intercept_2 = intercept_2
-
     # NAMING
 
     AREA_SCALING = np.sqrt(area)

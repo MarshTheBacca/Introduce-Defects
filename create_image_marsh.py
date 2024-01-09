@@ -1,16 +1,17 @@
-import cv2
-import networkx as nx
-import matplotlib.pyplot as plt
-import time
 import copy
 import shutil
-import numpy as np
-from sys import exit
-from pathlib import Path
-from typing import Callable
-from utils import NetMCAux, NetMCNets, NetworkType
-from typing import TypeAlias
 from enum import Enum
+from pathlib import Path
+from sys import exit
+from typing import Callable, TypeAlias
+
+import cv2
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+
+from utils import (LAMMPSAngle, LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCAux,
+                   NetMCData, NetMCNets, NetworkType)
 
 # The comment he's included in C.data 'Atoms' line is wrong, the atoms are being stored as regular atoms, not molecules
 # since there is a missing molecule ID column.
@@ -698,647 +699,186 @@ class DrawLineWidget:
         return self.clone
 
 
-def make_crds_marks_bilayer(folder, intercept_2, triangle_raft, bilayer, common_files_path, output_path):
-    area = 1.00
-    intercept_1 = intercept_2
+# Constants
+ANGSTROM_TO_BOHR = 1 / 0.52917721090380
+O_O_DISTANCE_FACTOR = np.sqrt(8.0 / 3.0)
+SI_O_LENGTH_ANGSTROM = 1.609
+H_ANGLE_DEGREES = 19.5
 
-    # NAMING
+# Scaling factors
+SI_O_LENGTH_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM
+O_O_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * O_O_DISTANCE_FACTOR
+H_BOHR = ANGSTROM_TO_BOHR * np.sin(np.radians(H_ANGLE_DEGREES)) * SI_O_LENGTH_ANGSTROM
 
-    AREA_SCALING = np.sqrt(area)
-    UNITS_SCALING = 1 / 0.52917721090380
-    si_si_distance = UNITS_SCALING * 1.609 * np.sqrt((32.0 / 9.0))
-    si_o_length = UNITS_SCALING * 1.609
-    o_o_distance = UNITS_SCALING * 1.609 * np.sqrt((8.0 / 3.0))
-    h = UNITS_SCALING * np.sin((19.5 / 180) * np.pi) * 1.609
 
-    displacement_vectors_norm = np.array(
-        [[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 3]])
-    displacement_vectors_factored = displacement_vectors_norm * 0.5
+def plot_bilayer(lammps_data: LAMMPSData, path: Path, file_extension: str) -> None:
+    si_coords = lammps_data.get_coords("Si")
+    o_coords = lammps_data.get_coords("O")
+    plt.scatter(si_coords[:, 0], si_coords[:, 1], color='y', s=0.4)
+    plt.scatter(o_coords[:, 0], o_coords[:, 1], color='r', s=0.4)
+    plt.savefig(path.joinpath(f"Bilayer_Atoms.{file_extension}"))
 
-    with open(folder + '/testA_a_aux.dat', 'r') as f:
-        n_nodes = np.genfromtxt(f, max_rows=1)
-        n_nodes = int(n_nodes)
-    with open(folder + '/testA_a_aux.dat', 'r') as f:
-        dims = np.genfromtxt(f, skip_header=3, skip_footer=1)
-        dim_x, dim_y = dims[0], dims[1]
+    for bond in lammps_data.bonds:
+        # Only need to check for O-Si because bond labels are
+        # sorted when the LAMMPSBond object is created in the __post_init__ method
+        if bond.label == "O-Si":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[1], atom_2_crds[1]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_Si_O_Bonds.{file_extension}"))
+    plt.clf()
 
-    dim = np.array([dim_x, dim_y, 30])
-    with open(folder + '/testA_a_net.dat', 'r') as f:
-        net = np.genfromtxt(f)
+    plt.scatter(si_coords[:, 0], si_coords[:, 2], color='y', s=0.4)
+    plt.scatter(o_coords[:, 0], o_coords[:, 2], color='r', s=0.4)
+    for bond in lammps_data.bonds:
+        if bond.label == "O-O":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_O_O_Bonds.{file_extension}"))
+    for bond in lammps_data.bonds:
+        if bond.label != "O-O":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_All_Bonds.{file_extension}"))
+    plt.clf()
 
-    with open(folder + '/testA_crds_a.dat', 'r') as f:
-        node_crds = np.genfromtxt(f)
 
-    with open(folder + '/testA_b_crds.dat', 'r') as f:
-        dual_crds = np.genfromtxt(f)
-    number_scaling = np.sqrt(dual_crds.shape[0] / num_nodes_b)
-    print(dim_x, dim_y)
-    dim_x, dim_y = number_scaling * dim_x, number_scaling * dim_y
-    print(dim_x, dim_y)
-    print(dual_crds.shape[0], num_nodes_b)
-    print(number_scaling)
-    dim = np.array([dim_x, dim_y, 30])
+def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
+    """
+    Calculate the vector difference between two vectors, taking into account periodic boundary conditions.
+    """
+    if len(vector1) != len(vector2) or len(vector1) != len(dimensions):
+        raise ValueError("Vectors must have the same number of dimensions.")
+    difference_vector = np.subtract(vector2, vector1)
+    dimension_ranges = dimensions[:, 1] - dimensions[:, 0]
+    difference_vector = (difference_vector + dimension_ranges /
+                         2) % dimension_ranges - dimension_ranges / 2
+    return difference_vector
 
-    node_crds = np.multiply(node_crds, number_scaling)
 
-    def pbc_v(i, j):
-        v = np.subtract(j, i)
-        for dimension in range(2):
-            if v[dimension] < -dim[dimension] / 2:
-                v[dimension] += dim[dimension]
-            elif v[dimension] > dim[dimension] / 2:
-                v[dimension] -= dim[dimension]
+def netmc_to_triangle_raft(netmc_data: NetMCData) -> LAMMPSData:
+    SI_SI_DISTANCE_FACTOR = np.sqrt(32.0 / 9.0)
+    SI_SI_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * SI_SI_DISTANCE_FACTOR
+    # The last vector was originally [-0.5, -np.sqrt(3) / 3], but this seems wrong vvvvv
+    DISPLACEMENT_VECTORS_NORM = np.array([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 2]])
+    DISPLACEMENT_VECTORS_FACTORED = DISPLACEMENT_VECTORS_NORM * 0.5
 
-        return v
-    # Monolayer
-    monolayer_crds = np.multiply(node_crds, 1)
+    triangle_raft_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=28.1, atom_style="atomic")
+    triangle_raft_lammps_data.scale_coords(SI_SI_DISTANCE_BOHR)
+    triangle_raft_lammps_data.add_atom_label("O")
+    triangle_raft_lammps_data.add_mass("O", 15.995)
 
-    for i in range(n_nodes):
-        atom_1 = i
-        for j in range(3):
-            atom_2 = net[i, j]
+    dimension_ranges = triangle_raft_lammps_data.dimensions[:, 1] - triangle_raft_lammps_data.dimensions[:, 0]
+    for si_atom in triangle_raft_lammps_data.atoms:
+        bonded_si_atoms = triangle_raft_lammps_data.get_bonded_atoms(si_atom)
+        for bonded_si_atom in bonded_si_atoms:
+            vector_between_si_atoms = pbc_vector(si_atom.coords, bonded_si_atom.coords, dimension_ranges)
+            normalized_vector = vector_between_si_atoms / np.linalg.norm(vector_between_si_atoms)
+            dot_product_grades = np.abs(np.dot(normalized_vector, DISPLACEMENT_VECTORS_NORM.T))
+            selected_vector_index = np.argmin(dot_product_grades)
+            midpoint = (si_atom.coords + vector_between_si_atoms / 2) % dimension_ranges
 
-            if i == 0 and j == 0:
-                monolayer_harmpairs = np.asarray([int(atom_1), int(atom_2)])
+            if dot_product_grades[selected_vector_index] < 0.1:
+                oxygen_coord = midpoint + DISPLACEMENT_VECTORS_FACTORED[selected_vector_index] % dimension_ranges
             else:
-                if atom_2 > atom_1:
-                    monolayer_harmpairs = np.vstack(
-                        (monolayer_harmpairs, np.asarray([int(atom_1), int(atom_2)])))
+                oxygen_coord = midpoint
+            triangle_raft_lammps_data.add_atom(LAMMPSAtom("O", oxygen_coord))
+            triangle_raft_lammps_data.add_structure(LAMMPSBond(si_atom, triangle_raft_lammps_data.atoms[-1]))
+            triangle_raft_lammps_data.add_structure(LAMMPSBond(bonded_si_atom, triangle_raft_lammps_data.atoms[-1]))
+            triangle_raft_lammps_data.add_structure(LAMMPSAngle(si_atom, triangle_raft_lammps_data.atoms[-1], bonded_si_atom))
+    triangle_raft_lammps_data.check()
+    return triangle_raft_lammps_data
 
-    for i in range(n_nodes):
-        atom_1 = i
-        if atom_1 == 0:
-            monolayer_angles = np.asarray([[net[i, 0], i, net[i, 1]],
-                                           [net[i, 0], i, net[i, 2]],
-                                           [net[i, 1], i, net[i, 2]]])
-        else:
-            monolayer_angles = np.vstack((monolayer_angles, np.asarray([[net[i, 0], i, net[i, 1]],
-                                                                        [net[i, 0], i,
-                                                                            net[i, 2]],
-                                                                        [net[i, 1], i, net[i, 2]]])))
 
-    print(f"Monolayer n {monolayer_crds.shape[0]}")
-    print(f"Monolayer harmpairs {monolayer_harmpairs.shape[0]}")
+# Intercept is defined when initalising DrawLineWidget as 1? No idea why
+def write_lammps_files(path: Path, non_defect_netmc_data: NetMCData, intercept: int, triangle_raft: bool, bilayer: bool, common_files_path: Path):
+    print("Writing LAMMPS files...")
+    netmc_data = NetMCData.import_data(path, prefix="testA")
+    scaling_factor = np.sqrt(netmc_data.num_nodes_b / non_defect_netmc_data.num_nodes_b)
 
-    with open(folder + '/PARM_Si.lammps', 'w') as f:
-        f.write('bond_style harmonic        \n')
-        f.write('bond_coeff 1 0.800 1.000  \n')
-        f.write('angle_style cosine/squared       \n')
-        f.write('angle_coeff 1 0.200 120   \n')
+    si_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=29.977, atom_style="atomic")
+    si_lammps_data.scale_coords(scaling_factor)
+    # Original function wrote dim lows as 0
+    si_lammps_data.export(path.joinpath("Si.data"))
+    shutil.copyfile(common_files_path.joinpath("Si.in"), path.joinpath("Si.in"))
+    shutil.copyfile(common_files_path.joinpath("PARM_Si.lammps"), path.joinpath("PARM_Si.lammps"))
 
-    with open(folder + '/Si.data', 'w') as f:
-        f.write('DATA FILE Produced from netmc results (cf David Morley)\n')
-        f.write(f"{monolayer_crds.shape[0]} atoms\n")
-        f.write(f"{monolayer_harmpairs.shape[0]} bonds\n")
-        f.write(f"{monolayer_angles.shape[0]} angles\n")
-        f.write('0 dihedrals\n')
-        f.write('0 impropers\n')
-        f.write('1 atom types\n')
-        f.write('1 bond types\n')
-        f.write('1 angle types\n')
-        f.write('0 dihedral types\n')
-        f.write('0 improper types\n')
-        f.write('0.00000 {:<5} xlo xhi\n'.format(dim[0]))
-        f.write('0.00000 {:<5} ylo yhi\n'.format(dim[1]))
-        f.write('\n')
-        f.write('# Pair Coeffs\n')
-        f.write('#\n')
-        f.write('# 1  Si\n')
-        f.write('\n')
-        f.write('# Bond Coeffs\n')
-        f.write('# \n')
-        f.write('# 1  Si-Si\n')
-        f.write('\n')
-        f.write('# Angle Coeffs\n')
-        f.write('# \n')
-        f.write('# 1  Si-Si-Si\n')
-        f.write('\n')
-        f.write(' Masses\n')
-        f.write('\n')
-        f.write('1 28.085500 # Si\n')
-        f.write('\n')
-        f.write(' Atoms # molecular\n')
-        f.write('\n')
-        for i in range(monolayer_crds.shape[0]):
-            f.write('{:<4} {:<4} {:<4} {:<24} {:<24} {:<24}# Si\n'.format(
-                int(i + 1), int(i + 1), 1, monolayer_crds[i, 0], monolayer_crds[i, 1], 0.0))
-        f.write('\n')
-        f.write(' Bonds\n')
-        f.write('\n')
-        for i in range(monolayer_harmpairs.shape[0]):
-            f.write('{:} {:} {:} {:}\n'.format(int(
-                i + 1), 1, int(monolayer_harmpairs[i, 0] + 1), int(monolayer_harmpairs[i, 1] + 1)))
-        f.write('\n')
-        f.write(' Angles\n')
-        f.write('\n')
-        for i in range(monolayer_angles.shape[0]):
-            f.write('{:} {:} {:} {:} {:}\n'.format(int(i + 1), 1, int(monolayer_angles[i, 0] + 1), int(
-                monolayer_angles[i, 1] + 1), int(monolayer_angles[i, 2] + 1)))
-    shutil.copyfile(common_files_path.joinpath(
-        "Si.in"), output_path.joinpath("Si.in"))
-
-    # Tersoff Graphene
-
-    print("########### Tersoff Graphene ###############")
-    tersoff_crds = np.multiply(node_crds, 1.42)
-    with open(folder + '/PARM_C.lammps', 'w') as f:
-        f.write('pair_style tersoff\n')
-        f.write('pair_coeff * * Results/BNC.tersoff C\n')
-    shutil.copyfile(common_files_path.joinpath(
-        "C.in"), output_path.joinpath("C.in"))
-
-    with open(folder + '/C.data', 'w') as f:
-        f.write('DATA FILE Produced from netmc results (cf David Morley)\n')
-        f.write('{:} atoms\n'.format(tersoff_crds.shape[0]))
-        f.write('1 atom types\n')
-        f.write('0.00000 {:<5} xlo xhi\n'.format(dim[0] * 1.42))
-        f.write('0.00000 {:<5} ylo yhi\n'.format(dim[1] * 1.42))
-        f.write('\n')
-        f.write(' Masses\n')
-        f.write('\n')
-        f.write('1 12.0000 # Si\n')
-        f.write('\n')
-        f.write(' Atoms # molecular\n')
-        f.write('\n')
-        for i in range(tersoff_crds.shape[0]):
-            f.write('{:<4} {:<4} {:<24} {:<24} {:<24}# C\n'.format(int(i + 1), 1,
-                                                                   tersoff_crds[i, 0],
-                                                                   tersoff_crds[i, 1], 0.0))
-        f.write('\n')
-
-    # Triangle Raft
+    c_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="C", atomic_mass=12.0000, atom_style="atomic")
+    c_lammps_data.scale_coords(1.42)
+    # Original function wrote dim lows as 0 and did not include bonds or angles
+    c_lammps_data.export(path.joinpath("C.data"))
+    shutil.copyfile(common_files_path.joinpath("C.in"), path.joinpath("C.in"))
+    shutil.copyfile(common_files_path.joinpath("PARM_C.lammps"), path.joinpath("PARM_C.lammps"))
 
     if triangle_raft:
+        print("Writing triangle raft files...")
+        # Should we use isotopic masses or abundance based masses?
+        # For some reason the original function uses Si = 32.01 and O = 28.1, but I think this is wrong
 
-        print("########### Triangle Raft ##############")
-        dim[0] *= si_si_distance * AREA_SCALING
-        dim[1] *= si_si_distance * AREA_SCALING
+        # For Si2O3 coords, the first 2/5 of the coords are Si, the last 3/5 are O. All atoms z = 5.0
+        # For SiO2 coords, the first 1/3 are Si, the rest are O. Si z alternates between 5 and 11.081138669036534 (5 + 2 * Si-O length)
+        # The O coords in SiO2, the first 1/4 are z = 8.040569334518267, last 3/4 alternate between 3.9850371001619402, 12.096101568874595 (8.040569334518267 + 2 * Si-O length)
 
-        dim_x *= si_si_distance * AREA_SCALING
-        dim_y *= si_si_distance * AREA_SCALING
-        triangle_raft_si_crds = np.multiply(
-            monolayer_crds, si_si_distance * AREA_SCALING)
-        dict_sio = {}
-        for i in range(int(n_nodes * 3 / 2), int(n_nodes * 5 / 2)):
-            dict_sio['{:}'.format(i)] = []
-        for i in range(monolayer_harmpairs.shape[0]):
-            atom_1 = int(monolayer_harmpairs[i, 0])
-            atom_2 = int(monolayer_harmpairs[i, 1])
-            atom_1_crds = triangle_raft_si_crds[atom_1, :]
-            atom_2_crds = triangle_raft_si_crds[atom_2, :]
+        shutil.copyfile(common_files_path.joinpath("Si2O3.in"), path.joinpath("Si2O3.in"))
 
-            v = pbc_v(atom_1_crds, atom_2_crds)
-            norm_v = np.divide(v, np.linalg.norm(v))
+        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
+        triangle_raft_lammps_data.export(path.joinpath("Si2O3.data"))
 
-            grading = [abs(np.dot(norm_v, displacement_vectors_norm[i, :]))
-                       for i in range(displacement_vectors_norm.shape[0])]
-            selection = grading.index(min(grading))
-            if abs(grading[selection]) < 0.1:
-
-                unperturbed_oxygen_0_crds = np.add(
-                    atom_1_crds, np.divide(v, 2))
-                oxygen_0_crds = np.add(
-                    unperturbed_oxygen_0_crds, displacement_vectors_factored[selection])
-
-            else:
-                oxygen_0_crds = np.add(atom_1_crds, np.divide(v, 2))
-
-            if oxygen_0_crds[0] > dim_x:
-                oxygen_0_crds[0] -= dim_x
-            elif oxygen_0_crds[0] < 0:
-                oxygen_0_crds[0] += dim_x
-            if oxygen_0_crds[1] > dim_y:
-                oxygen_0_crds[1] -= dim_y
-            elif oxygen_0_crds[1] < 0:
-                oxygen_0_crds[1] += dim_y
-
-            if i == 0:
-                triangle_raft_o_crds = np.asarray(oxygen_0_crds)
-                triangle_raft_harmpairs = np.asarray([[i, atom_1 + n_nodes * 3 / 2],
-                                                      [i, atom_2 + n_nodes * 3 / 2]])
-                dict_sio['{:}'.format(int(atom_1 + n_nodes * 3 / 2))].append(i)
-                dict_sio['{:}'.format(int(atom_2 + n_nodes * 3 / 2))].append(i)
-            else:
-                triangle_raft_o_crds = np.vstack(
-                    (triangle_raft_o_crds, oxygen_0_crds))
-                triangle_raft_harmpairs = np.vstack((triangle_raft_harmpairs, np.asarray([[i, atom_1 + n_nodes * 3 / 2],
-                                                                                          [i, atom_2 + n_nodes * 3 / 2]])))
-                dict_sio['{:}'.format(int(atom_1 + n_nodes * 3 / 2))].append(i)
-                dict_sio['{:}'.format(int(atom_2 + n_nodes * 3 / 2))].append(i)
-
-        for i in range(int(n_nodes * 3 / 2), int(n_nodes * 5 / 2)):
-            for j in range(2):
-                for k in range(j + 1, 3):
-                    if i == int(n_nodes * 3 / 2) and j == 0 and k == 1:
-                        triangle_raft_o_harmpairs = np.array(
-                            [dict_sio['{:}'.format(i)][j], dict_sio['{:}'.format(i)][k]])
-                    else:
-                        triangle_raft_o_harmpairs = np.vstack((triangle_raft_o_harmpairs, np.array(
-                            [dict_sio['{:}'.format(i)][j], dict_sio['{:}'.format(i)][k]])))
-                    triangle_raft_harmpairs = np.vstack((triangle_raft_harmpairs, np.array(
-                        [dict_sio['{:}'.format(i)][j], dict_sio['{:}'.format(i)][k]])))
-
-        triangle_raft_crds = np.vstack(
-            (triangle_raft_o_crds, triangle_raft_si_crds))
-
-        for i in range(triangle_raft_crds.shape[0]):
-            for j in range(2):
-                if triangle_raft_crds[i, j] > dim[j] or triangle_raft_crds[i, j] < 0:
-                    print('FUCK')
-
-        print('Triangle Raft n {:}    si {:}    o {:}'.format(
-            triangle_raft_crds.shape[0], triangle_raft_si_crds.shape[0], triangle_raft_o_crds.shape[0]))
-        print('Triangle Raft harmpairs : {:}'.format(
-            triangle_raft_harmpairs.shape[0]))
-
-        def plot_triangle_raft():
-            plt.scatter(
-                triangle_raft_si_crds[:, 0], triangle_raft_si_crds[:, 1], color='y', s=0.4)
-            plt.scatter(
-                triangle_raft_o_crds[:, 0], triangle_raft_o_crds[:, 1], color='r', s=0.4)
-            plt.savefig('triangle_raft atoms')
-            plt.clf()
-            plt.scatter(
-                triangle_raft_si_crds[:, 0], triangle_raft_si_crds[:, 1], color='y', s=0.6)
-            plt.scatter(
-                triangle_raft_o_crds[:, 0], triangle_raft_o_crds[:, 1], color='r', s=0.6)
-            print(triangle_raft_harmpairs.shape)
-            for i in range(triangle_raft_harmpairs.shape[0]):
-
-                atom_1 = int(triangle_raft_harmpairs[i, 0])
-                atom_2 = int(triangle_raft_harmpairs[i, 1])
-                if atom_1 < triangle_raft_o_crds.shape[0] and atom_2 < triangle_raft_o_crds.shape[0]:
-                    atom_1_crds = triangle_raft_crds[atom_1, :]
-                    atom_2_crds = triangle_raft_crds[atom_2, :]
-                    atom_2_crds = np.add(
-                        atom_1_crds, pbc_v(atom_1_crds, atom_2_crds))
-                    plt.plot([atom_1_crds[0], atom_2_crds[0]], [
-                             atom_1_crds[1], atom_2_crds[1]], color='k')
-            for i in range(triangle_raft_harmpairs.shape[0]):
-
-                atom_1 = int(triangle_raft_harmpairs[i, 0])
-                atom_2 = int(triangle_raft_harmpairs[i, 1])
-                if atom_1 < triangle_raft_o_crds.shape[0] and atom_2 < triangle_raft_o_crds.shape[0]:
-                    atom_1_crds = np.add(
-                        triangle_raft_crds[atom_1, :], np.array([0, dim[1]]))
-                    atom_2_crds = np.add(
-                        triangle_raft_crds[atom_2, :], np.array([0, dim[1]]))
-                    atom_2_crds = np.add(
-                        atom_1_crds, pbc_v(atom_1_crds, atom_2_crds))
-                    plt.plot([atom_1_crds[0], atom_2_crds[0]], [
-                             atom_1_crds[1], atom_2_crds[1]], color='k')
-
-            plt.savefig('triangle raft bonds')
-            plt.clf()
-        n_bonds = triangle_raft_harmpairs.shape[0]
-
-        n_bond_types = 2
-
-        with open(folder + '/PARM_Si2O3.lammps', 'w') as output_file:
-
-            output_file.write(
-                'pair_style lj/cut {:}\n'.format(o_o_distance * intercept_1))
-            output_file.write('pair_coeff * * 0.1 {:} {:}\n'.format(
-                o_o_distance * intercept_1 / 2**(1 / 6), o_o_distance * intercept_1))
-            output_file.write('pair_modify shift yes\n'.format())
-            output_file.write('special_bonds lj 0.0 1.0 1.0\n'.format())
-
+        with open(path.joinpath("PARM_Si2O3.lammps"), 'w') as output_file:
+            output_file.write(f"pair_style lj/cut {O_O_DISTANCE_BOHR * intercept}\n")
+            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}")
+            output_file.write("pair_modify shift yes\n")
+            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
             output_file.write('bond_style harmonic\n')
             output_file.write('bond_coeff 2 1.001 2.86667626014\n')
             output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
-        shutil.copyfile(common_files_path.joinpath("Si2O3.in"),
-                        output_path.joinpath("Si2O3.in"))
 
-        with open(folder + '/Si2O3.data', 'w') as f:
-            f.write('DATA FILE Produced from netmc results (cf David Morley)\n')
-            f.write('{:} atoms\n'.format(triangle_raft_crds.shape[0]))
-            f.write('{:} bonds\n'.format(int(n_bonds)))
-            f.write('0 angles\n')
-            f.write('0 dihedrals\n')
-            f.write('0 impropers\n')
-            f.write('2 atom types\n')
-            f.write('{:} bond types\n'.format(int(n_bond_types)))
-            f.write('0 angle types\n')
-            f.write('0 dihedral types\n')
-            f.write('0 improper types\n')
-            f.write('0.00000 {:<5} xlo xhi\n'.format(dim[0]))
-            f.write('0.00000 {:<5} ylo yhi\n'.format(dim[1]))
-            f.write('\n')
-            f.write('# Pair Coeffs\n')
-            f.write('#\n')
-            f.write('# 1  O\n')
-            f.write('# 2  Si\n')
-            f.write('\n')
-            f.write('# Bond Coeffs\n')
-            f.write('# \n')
-            f.write('# 1  O-O\n')
-            f.write('# 2  Si-O\n')
-            f.write('# 3  O-O rep\n')
-            f.write('# 4  Si-Si rep\n')
-
-            f.write('\n')
-            f.write(' Masses\n')
-            f.write('\n')
-            f.write('1 28.10000 # O \n')
-            f.write('2 32.01000 # Si\n')
-            f.write('\n')
-            f.write(' Atoms # molecular\n')
-            f.write('\n')
-
-            for i in range(triangle_raft_si_crds.shape[0]):
-                f.write('{:<4} {:<4} {:<4} {:<24} {:<24} {:<24} # Si\n'.format(int(i + 1),
-                                                                               int(i + 1),
-                                                                               2, triangle_raft_si_crds[i, 0],
-                                                                               triangle_raft_si_crds[i, 1], 5.0))
-            for i in range(triangle_raft_o_crds.shape[0]):
-                f.write('{:<4} {:<4} {:<4} {:<24} {:<24} {:<24} # O\n'.format(int(i + 1 + triangle_raft_si_crds.shape[0]),
-                                                                              int(
-                                                                                  i + 1 + triangle_raft_si_crds.shape[0]),
-                                                                              1, triangle_raft_o_crds[i, 0],
-                                                                              triangle_raft_o_crds[i, 1], 5.0))
-
-            f.write('\n')
-            f.write(' Bonds\n')
-            f.write('\n')
-            for i in range(triangle_raft_harmpairs.shape[0]):
-                pair1 = triangle_raft_harmpairs[i, 0]
-                if pair1 < triangle_raft_o_crds.shape[0]:
-                    pair1_ref = pair1 + 1 + triangle_raft_si_crds.shape[0]
-                else:
-                    pair1_ref = pair1 + 1 - triangle_raft_o_crds.shape[0]
-                pair2 = triangle_raft_harmpairs[i, 1]
-                if pair2 < triangle_raft_o_crds.shape[0]:
-                    pair2_ref = pair2 + 1 + triangle_raft_si_crds.shape[0]
-                else:
-                    pair2_ref = pair2 + 1 - triangle_raft_o_crds.shape[0]
-
-                if triangle_raft_harmpairs[i, 0] < triangle_raft_o_crds.shape[0] and triangle_raft_harmpairs[i, 1] < triangle_raft_o_crds.shape[0]:
-
-                    f.write('{:} {:} {:} {:} \n'.format(int(i + 1), 1, int(pair1_ref),
-                                                        int(pair2_ref)))
-                else:
-
-                    f.write('{:} {:} {:} {:} \n'.format(int(i + 1), 2, int(pair1_ref),
-                                                        int(pair2_ref)))
-
-        with open(folder + '/Si2O3_harmpairs.dat', 'w') as f:
-            f.write('{:}\n'.format(triangle_raft_harmpairs.shape[0]))
-            for i in range(triangle_raft_harmpairs.shape[0]):
-                if triangle_raft_harmpairs[i, 0] < triangle_raft_o_crds.shape[0] and triangle_raft_harmpairs[i, 1] < triangle_raft_o_crds.shape[0]:
-                    f.write('{:<10} {:<10} \n'.format(int(triangle_raft_harmpairs[i, 0] + 1),
-                                                      int(triangle_raft_harmpairs[i, 1] + 1)))
-                else:
-                    f.write('{:<10} {:<10} \n'.format(int(triangle_raft_harmpairs[i, 0] + 1),
-                                                      int(triangle_raft_harmpairs[i, 1] + 1)))
+        triangle_raft_lammps_data.export_bonds(path.joinpath("Si2O3_harmpairs.dat"))
 
     if bilayer:
-        def triangle_raft_to_bilayer(i):
-            if i > 3 * n_nodes / 2:
-                # Si atom
-                si_ref = i - 3 * n_nodes / 2
-                return [4 * n_nodes + 2 * si_ref, 4 * n_nodes + 2 * si_ref + 1]
-            else:
-                # O atom
-                o_ref = i
-                return [n_nodes + 2 * o_ref, n_nodes + 2 * o_ref + 1]
+        print("Writing bilayer files...")
+        shutil.copyfile(common_files_path.joinpath("SiO2.in"), path.joinpath("SiO2.in"))
+        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
+        triangle_raft_lammps_data.make_3d()
+        # All atoms now have z = 0
+        bilayer_lammps_data = LAMMPSData()
+        bilayer_lammps_data.add_atom_label("Si")
+        bilayer_lammps_data.add_atom_label("O")
+        bilayer_lammps_data.add_mass("Si", 28.1)
+        bilayer_lammps_data.add_mass("O", 15.995)
+        for atom in triangle_raft_lammps_data.atoms:
+            if atom.label == "Si":
+                bottom_si_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5]), "Si")
+                top_si_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + 2 * SI_O_LENGTH_BOHR]), "Si")
+                central_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + SI_O_LENGTH_BOHR]), "O")
+                bilayer_lammps_data.add_atom(bottom_si_atom)
+                bilayer_lammps_data.add_atom(top_si_atom)
+                bilayer_lammps_data.add_atom(central_o_atom)
+            if atom.label == "O":
+                bottom_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 - H_BOHR]), "O")
+                top_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + H_BOHR + 2 * SI_O_LENGTH_BOHR]), "O")
+                bilayer_lammps_data.add_atom(top_o_atom)
+                bilayer_lammps_data.add_atom(bottom_o_atom)
 
-        # Bilayer
-        print("############ Bilayer ###############")
+        bilayer_lammps_data.bond_atoms_within_distance(1.1 * SI_O_LENGTH_BOHR)
+        bilayer_lammps_data.export(path.joinpath("SiO2.data"))
+        bilayer_lammps_data.export_bonds(path.joinpath("SiO2_harmpairs.dat"))
 
-        # Si Atoms
-        for i in range(triangle_raft_si_crds.shape[0]):
-            if i == 0:
-                bilayer_si_crds = np.asarray([[triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5],
-                                              [triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5 + 2 * si_o_length]])
-            else:
-                bilayer_si_crds = np.vstack((bilayer_si_crds, np.asarray([[triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5],
-                                                                          [triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5 + 2 * si_o_length]])))
-        # O ax Atoms
-        for i in range(triangle_raft_si_crds.shape[0]):
-            if i == 0:
-                bilayer_o_crds = np.asarray(
-                    [triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5 + si_o_length])
-            else:
-                bilayer_o_crds = np.vstack((bilayer_o_crds, np.asarray(
-                    [triangle_raft_si_crds[i, 0], triangle_raft_si_crds[i, 1], 5 + si_o_length])))
-        # O eq
-        for i in range(triangle_raft_o_crds.shape[0]):
-            bilayer_o_crds = np.vstack((bilayer_o_crds, np.asarray(
-                [triangle_raft_o_crds[i, 0], triangle_raft_o_crds[i, 1], 5 - h])))
-            bilayer_o_crds = np.vstack((bilayer_o_crds, np.asarray(
-                [triangle_raft_o_crds[i, 0], triangle_raft_o_crds[i, 1], 5 + h + 2 * si_o_length])))
-
-        bilayer_crds = np.vstack((bilayer_o_crds, bilayer_si_crds))
-
-        dict_sio2 = {}
-
-        # Harmpairs
-        # O ax
-        for i in range(triangle_raft_si_crds.shape[0]):
-            if i == 0:
-                bilayer_harmpairs = np.asarray([[i, 4 * n_nodes + 2 * i],  # 3200
-                                                # 3201
-                                                [i, 4 * n_nodes + 1 + 2 * i],
-                                                [i, triangle_raft_to_bilayer(
-                                                    dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][0])[0]],
-                                                [i, triangle_raft_to_bilayer(
-                                                    dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][0])[1]],
-                                                [i, triangle_raft_to_bilayer(
-                                                    dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][1])[0]],
-                                                [i, triangle_raft_to_bilayer(
-                                                    dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][1])[1]],
-                                                [i, triangle_raft_to_bilayer(
-                                                    dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][2])[0]],
-                                                [i, triangle_raft_to_bilayer(dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][2])[1]]]
-                                               )
-            else:
-                bilayer_harmpairs = np.vstack((bilayer_harmpairs, np.asarray([[i, 4 * n_nodes + 2 * i],  # 3200
-                                                                              # 3201
-                                                                              [i, 4 * n_nodes + \
-                                                                                  1 + 2 * i],
-                                                                              [i, triangle_raft_to_bilayer(
-                                                                                  dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][0])[0]],
-                                                                              [i, triangle_raft_to_bilayer(
-                                                                                  dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][0])[1]],
-                                                                              [i, triangle_raft_to_bilayer(
-                                                                                  dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][1])[0]],
-                                                                              [i, triangle_raft_to_bilayer(
-                                                                                  dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][1])[1]],
-                                                                              [i, triangle_raft_to_bilayer(
-                                                                                  dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][2])[0]],
-                                                                              [i, triangle_raft_to_bilayer(dict_sio['{:}'.format(int(3 * n_nodes / 2 + i))][2])[1]]])))
-        # Si - O cnxs
-        for i in range(triangle_raft_harmpairs.shape[0]):
-            atom_1 = triangle_raft_to_bilayer(triangle_raft_harmpairs[i, 0])
-            atom_2 = triangle_raft_to_bilayer(triangle_raft_harmpairs[i, 1])
-
-            bilayer_harmpairs = np.vstack((bilayer_harmpairs, np.asarray(
-                [[atom_1[0], atom_2[0]], [atom_1[1], atom_2[1]]])))
-
-        for vals in dict_sio.keys():
-            dict_sio2['{:}'.format(int(vals) - 3 * n_nodes / 2 + 4 * n_nodes)] = [
-                triangle_raft_to_bilayer(dict_sio["{:}".format(vals)][i]) for i in range(3)]
-
-        def plot_bilayer():
-            plt.scatter(bilayer_si_crds[:, 0],
-                        bilayer_si_crds[:, 1], color='y', s=0.4)
-            plt.scatter(bilayer_o_crds[:, 0],
-                        bilayer_o_crds[:, 1], color='r', s=0.4)
-            plt.savefig('bilayer atoms')
-            plt.clf()
-            plt.scatter(bilayer_si_crds[:, 0],
-                        bilayer_si_crds[:, 1], color='y', s=0.4)
-            plt.scatter(bilayer_o_crds[:, 0],
-                        bilayer_o_crds[:, 1], color='r', s=0.4)
-            for i in range(bilayer_harmpairs.shape[0]):
-                atom_1_crds = bilayer_crds[int(bilayer_harmpairs[i, 0]), :]
-                atom_2_crds = bilayer_crds[int(bilayer_harmpairs[i, 1]), :]
-                atom_2_crds = np.add(
-                    atom_1_crds, pbc_v(atom_1_crds, atom_2_crds))
-                if int(bilayer_harmpairs[i, 0]) >= 4 * n_nodes or int(bilayer_harmpairs[i, 1]) >= 4 * n_nodes:
-                    plt.plot([atom_1_crds[0], atom_2_crds[0]], [
-                             atom_1_crds[1], atom_2_crds[1]], color='k')
-            plt.title('Si-O')
-            plt.savefig('bilayer SiO bond')
-            plt.clf()
-            plt.scatter(bilayer_si_crds[:, 0],
-                        bilayer_si_crds[:, 1], color='y', s=0.4)
-            plt.scatter(bilayer_o_crds[:, 0],
-                        bilayer_o_crds[:, 1], color='r', s=0.4)
-            for i in range(bilayer_harmpairs.shape[0]):
-                atom_1_crds = bilayer_crds[int(bilayer_harmpairs[i, 0]), :]
-                atom_2_crds = bilayer_crds[int(bilayer_harmpairs[i, 1]), :]
-                atom_2_crds = np.add(
-                    atom_1_crds, pbc_v(atom_1_crds, atom_2_crds))
-                if int(bilayer_harmpairs[i, 0]) < 4 * n_nodes and int(bilayer_harmpairs[i, 1]) < 4 * n_nodes:
-                    plt.plot([atom_1_crds[0], atom_2_crds[0]], [
-                             atom_1_crds[1], atom_2_crds[1]], color='k')
-            plt.title('O-O')
-            plt.savefig('bilayer OO bond')
-            plt.clf()
-
-            plt.scatter(bilayer_si_crds[:, 0],
-                        bilayer_si_crds[:, 2], color='y', s=0.4)
-            plt.scatter(bilayer_o_crds[:, 0],
-                        bilayer_o_crds[:, 2], color='r', s=0.4)
-            for i in range(bilayer_harmpairs.shape[0]):
-                atom_1_crds = bilayer_crds[int(bilayer_harmpairs[i, 0]), :]
-                atom_2_crds = bilayer_crds[int(bilayer_harmpairs[i, 1]), :]
-                atom_2_crds = np.add(
-                    atom_1_crds, pbc_v(atom_1_crds, atom_2_crds))
-                plt.plot([atom_1_crds[0], atom_2_crds[0]], [
-                         atom_1_crds[2], atom_2_crds[2]], color='k')
-
-            plt.savefig('bilayer all')
-            plt.clf()
-
-        plot_bilayer()
-
-        n_bonds = bilayer_harmpairs.shape[0]
-
-        with open(folder + '/PARM_SiO2.lammps', 'w') as output_file:
-            output_file.write(
-                'pair_style lj/cut {:}\n'.format(o_o_distance * intercept_1))
-            output_file.write('pair_coeff * * 0.1 {:} {:}\n'.format(
-                o_o_distance * intercept_1 / 2**(1 / 6), o_o_distance * intercept_1))
-            output_file.write('pair_modify shift yes\n'.format())
-            output_file.write('special_bonds lj 0.0 1.0 1.0\n'.format())
-
+        with open(path.joinpath("PARM_SiO2.lammps"), 'w') as output_file:
+            output_file.write('pair_style lj/cut {:}\n'.format(O_O_DISTANCE_BOHR * intercept))
+            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}\n")
+            output_file.write("pair_modify shift yes\n")
+            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
             output_file.write('bond_style harmonic\n')
             output_file.write('bond_coeff 2 1.001 3.0405693345182674\n')
             output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
 
-        with open(folder + '/SiO2.data', 'w') as f:
-            f.write('DATA FILE Produced from netmc results (cf David Morley)\n')
-            f.write('{:} atoms\n'.format(bilayer_crds.shape[0]))
-            f.write('{:} bonds\n'.format(int(n_bonds)))
-            f.write('0 angles\n')
-            f.write('0 dihedrals\n')
-            f.write('0 impropers\n')
-            f.write('2 atom types\n')
-            f.write('0 bond types\n')
-            f.write('{:} bond types\n'.format(int(n_bond_types)))
-            f.write('0 angle types\n')
-            f.write('0 dihedral types\n')
-            f.write('0 improper types\n')
-            f.write('0.00000 {:<5} xlo xhi\n'.format(dim[0]))
-            f.write('0.00000 {:<5} ylo yhi\n'.format(dim[1]))
-            f.write('0.0000 200.0000 zlo zhi\n')
-            f.write('\n')
-            f.write('# Pair Coeffs\n')
-            f.write('#\n')
-            f.write('# 1  O\n')
-            f.write('# 2  Si\n')
-            f.write('\n')
-            f.write('# Bond Coeffs\n')
-            f.write('# \n')
-            f.write('# 1  O-O\n')
-            f.write('# 2  Si-O\n')
-            f.write('# 3  O-O rep\n')
-            f.write('# 4  Si-Si rep\n')
-            f.write('\n')
-            f.write(' Masses\n')
-            f.write('\n')
-            f.write('1 28.10000 # O \n')
-            f.write('2 32.01000 # Si\n')
-            f.write('\n')
-            f.write(' Atoms # molecular\n')
-            f.write('\n')
-
-            for i in range(bilayer_si_crds.shape[0]):
-                f.write('{:<4} {:<4} {:<4} {:<24} {:<24} {:<24} # Si\n'.format(int(i + 1),
-                                                                               int(i + 1),
-                                                                               2,
-                                                                               bilayer_si_crds[i, 0],
-                                                                               bilayer_si_crds[i, 1],
-                                                                               bilayer_si_crds[i, 2],
-                                                                               ))
-            for i in range(bilayer_o_crds.shape[0]):
-                f.write('{:<4} {:<4} {:<4} {:<24} {:<24} {:<24} # O\n'.format(int(i + 1 + bilayer_si_crds.shape[0]),
-                                                                              int(
-                                                                                  i + 1 + bilayer_si_crds.shape[0]),
-                                                                              1,
-                                                                              bilayer_o_crds[i, 0],
-                                                                              bilayer_o_crds[i, 1],
-                                                                              bilayer_o_crds[i, 2],
-                                                                              ))
-
-            f.write('\n')
-            f.write(' Bonds\n')
-            f.write('\n')
-            for i in range(bilayer_harmpairs.shape[0]):
-
-                pair1 = bilayer_harmpairs[i, 0]
-                if pair1 < bilayer_o_crds.shape[0]:
-                    pair1_ref = pair1 + 1 + bilayer_si_crds.shape[0]
-                else:
-                    pair1_ref = pair1 + 1 - bilayer_o_crds.shape[0]
-                pair2 = bilayer_harmpairs[i, 1]
-                if pair2 < bilayer_o_crds.shape[0]:
-                    pair2_ref = pair2 + 1 + bilayer_si_crds.shape[0]
-                else:
-                    pair2_ref = pair2 + 1 - bilayer_o_crds.shape[0]
-
-                if bilayer_harmpairs[i, 0] < bilayer_o_crds.shape[0] and bilayer_harmpairs[i, 1] < bilayer_o_crds.shape[0]:
-                    f.write('{:} {:} {:} {:}\n'.format(
-                        int(i + 1), 1, int(pair1_ref), int(pair2_ref)))
-                else:
-                    f.write('{:} {:} {:} {:}\n'.format(
-                        int(i + 1), 2, int(pair1_ref), int(pair2_ref)))
-
-        with open(folder + '/SiO2_harmpairs.dat', 'w') as f:
-            f.write('{:}\n'.format(bilayer_harmpairs.shape[0]))
-            for i in range(bilayer_harmpairs.shape[0]):
-                if bilayer_harmpairs[i, 0] < bilayer_o_crds.shape[0] and bilayer_harmpairs[i, 1] < bilayer_o_crds.shape[0]:
-                    f.write('{:<10} {:<10}\n'.format(
-                        int(bilayer_harmpairs[i, 0] + 1), int(bilayer_harmpairs[i, 1] + 1)))
-                else:
-                    f.write('{:<10} {:<10}\n'.format(
-                        int(bilayer_harmpairs[i, 0] + 1), int(bilayer_harmpairs[i, 1] + 1)))
-
-        shutil.copyfile(common_files_path.joinpath(
-            "SiO2.in"), output_path.joinpath("SiO2.in"))
-    print('Finished')
+    print("Finished writing LAMMPS files.")
 
 
 if __name__ == '__main__':

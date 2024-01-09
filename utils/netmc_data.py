@@ -222,6 +222,13 @@ class NetMCData:
             return get_graph(self.crds_b, self.net_b)
         raise ValueError("Invalid network type")
 
+    def get_dimensions(self, network_type: NetworkType) -> np.ndarray:
+        if network_type == NetworkType.A:
+            return np.array([[self.aux_a.xlo, self.aux_a.xhi], [self.aux_a.ylo, self.aux_a.yhi]])
+        elif network_type == NetworkType.B:
+            return np.array([[self.aux_b.xlo, self.aux_b.xhi], [self.aux_b.ylo, self.aux_b.yhi]])
+        raise ValueError("Invalid network type")
+
 
 @dataclass
 class NetMCNets:
