@@ -30,6 +30,17 @@ from utils import (LAMMPSAngle, LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCAux,
 
 Network: TypeAlias = dict[int, dict]
 
+# Constants
+ANGSTROM_TO_BOHR = 1 / 0.52917721090380
+O_O_DISTANCE_FACTOR = np.sqrt(8.0 / 3.0)
+SI_O_LENGTH_ANGSTROM = 1.609
+H_ANGLE_DEGREES = 19.5
+
+# Scaling factors
+SI_O_LENGTH_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM
+O_O_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * O_O_DISTANCE_FACTOR
+H_BOHR = ANGSTROM_TO_BOHR * np.sin(np.radians(H_ANGLE_DEGREES)) * SI_O_LENGTH_ANGSTROM
+
 
 class ConnectionType(Enum):
     net: str = "net"
@@ -63,23 +74,19 @@ def left_click(coordinate: np.ndarray, graph_a: nx.graph, network_a: Network, ne
     if close_node is None:
         raise ValueError("No node found at coordinate: ", coordinate)
     deleted_nodes = np.append(deleted_nodes, close_node)
-    broken_rings = np.unique(
-        np.append(broken_rings, network_a[close_node]["dual"]))
+    broken_rings = np.unique(np.append(broken_rings, network_a[close_node]["dual"]))
 
     # add newly broken rings to list
     for ring in broken_rings:
         if close_node in network_b[ring]["dual"]:
-            network_b[ring]["net"] = np_remove_elements(
-                network_b[ring]["net"], close_node)
+            network_b[ring]["net"] = np_remove_elements(network_b[ring]["net"], close_node)
 
     # add the newly undercoordinated nodes to list
     for node in network_a[close_node]["net"]:
         undercoordinated_nodes = np.append(undercoordinated_nodes, node)
-        network_a[node]["net"] = np_remove_elements(
-            network_a[node]["net"], close_node)
+        network_a[node]["net"] = np_remove_elements(network_a[node]["net"], close_node)
         if node in deleted_nodes:
-            undercoordinated_nodes = np_remove_elements(
-                undercoordinated_nodes, node)
+            undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node)
     del network_a[close_node]
     refresh_new_cnxs(network_a, network_b, graph_a, graph_b,
                      np.array([]), undercoordinated_nodes, image)
@@ -113,7 +120,7 @@ def draw_circle(image: np.ndarray, coord: tuple[float, float], radius: float,
 
 
 def draw_line(image: np.ndarray, coord_1: tuple[float, float], coord_2: tuple[float, float],
-              color: tuple[int, int, int], thickness: int) -> None:
+              color: tuple[int, int, int], thickness: float) -> None:
     x_coord_0 = scale * coord_1[0] + X_OFFSET
     y_coord_0 = scale * coord_1[1] + Y_OFFSET
     x_coord_1 = scale * coord_2[0] + X_OFFSET
@@ -140,8 +147,7 @@ def draw_cnxs(image: np.ndarray, graph: nx.graph,
                 dy = coords[node_2][1] - coords[node_1][1]
                 distance = np.sqrt(dx**2 + dy**2)
                 if distance < 10:
-                    draw_line(image, coords[node_1],
-                              coords[node_2], colour, thickness)
+                    draw_line(image, coords[node_1], coords[node_2], colour, thickness)
 
 
 def refresh_new_cnxs(network_a: Network, network_b: Network,
@@ -152,22 +158,19 @@ def refresh_new_cnxs(network_a: Network, network_b: Network,
 
     draw_nodes(image, graph_a, (255, 0, 0), -1)
     draw_nodes(image, graph_b, (0, 255, 0), -1)
-
     draw_cnxs(image, graph_a, (255, 36, 12), 2)
     draw_cnxs(image, graph_b, (255, 36, 12), 1)
 
     for node in undercoordinated_nodes:
         if node in network_a:
-            draw_circle(image, network_a[node]["crds"], 15, (36, 255, 12))
+            draw_circle(image, network_a[node]["crds"], 15, (36, 255, 12), 1)
         else:
             print("Uncoordinated Atoms Doesnt Exist")
-
     for atom in atoms:
         if atom in network_a:
             atom_index = np.nonzero(atoms == atom)[0][0]
-            r, g, b = (int(5 + atom_index * 20)
-                       ) % 255, 36, int(abs(255 - atom_index * 20))
-            draw_circle(image, network_a[atom]["crds"], 10, (r, g, b))
+            r, g, b = (int(5 + atom_index * 20)) % 255, 36, int(abs(255 - atom_index * 20))
+            draw_circle(image, network_a[atom]["crds"], 10, (r, g, b), 1)
         else:
             print("Starting From atom doesn't Exist!")
 
@@ -177,17 +180,15 @@ def refresh_new_cnxs(network_a: Network, network_b: Network,
 
 
 def np_remove_elements(array: np.ndarray, elements_to_remove: np.ndarray) -> np.ndarray:
-    elements_to_remove = np.array([elements_to_remove]) if np.isscalar(
-        elements_to_remove) else elements_to_remove
+    elements_to_remove = np.array([elements_to_remove]) if np.isscalar(elements_to_remove) else elements_to_remove
     print(array, elements_to_remove)
     mask = np.logical_not(np.isin(array, elements_to_remove))
     print(mask)
     return array[mask]
 
 
-def find_nodes_connections(network: Network, nodes: np.ndarray, connection_type: ConnectionType) -> np.ndarray:
-    connected_nodes = {
-        connected_node for node in nodes for connected_node in network[node][CONNECTION_TYPE_MAP[connection_type]]}
+def find_nodes_connections(nodes: np.ndarray, network: Network, connection_type: ConnectionType) -> np.ndarray:
+    connected_nodes = {connected_node for node in nodes for connected_node in network[node][CONNECTION_TYPE_MAP[connection_type]]}
     return np.array(list(connected_nodes))
 
 
@@ -199,18 +200,17 @@ def remove_connections(network: Network, nodes: np.ndarray,
     return network
 
 
-def add_connections(network: Network, nodes: np.ndarray,
-                    connections_to_add: np.ndarray, connection_type: ConnectionType) -> Network:
+def add_connections(network: Network, nodes: np.ndarray, connections_to_add: np.ndarray,
+                    connection_type: ConnectionType) -> Network:
     for node in nodes:
         network[node][CONNECTION_TYPE_MAP[connection_type]] = np.append(network[node][CONNECTION_TYPE_MAP[connection_type]],
                                                                         connections_to_add)
-        network[node][CONNECTION_TYPE_MAP[connection_type]] = np.unique(
-            network[node][CONNECTION_TYPE_MAP[connection_type]])
+        network[node][CONNECTION_TYPE_MAP[connection_type]] = np.unique(network[node][CONNECTION_TYPE_MAP[connection_type]])
     return network
 
 
 def replace_node_ring_connections(network: Network, rings_to_merge: np.ndarray,
-                                  merged_ring: int) -> dict[int, dict]:
+                                  merged_ring: int) -> Network:
     for node in network:
         for ring in network[node]["dual"]:
             if ring in rings_to_merge:
@@ -235,18 +235,13 @@ def remove_nodes(network: Network, nodes_to_remove: np.ndarray) -> Network:
 def remapped_node(rings_to_merge: np.ndarray, network_a: Network,
                   network_b: Network) -> tuple[int, Network, Network]:
     merged_ring = min(rings_to_merge)
-    connected_rings = find_nodes_connections(
-        rings_to_merge, network_b, ConnectionType.net)
+    connected_rings = find_nodes_connections(rings_to_merge, network_b, ConnectionType.net)
     network_b[merged_ring]["net"] = connected_rings
     rings_to_remove = np_remove_elements(rings_to_merge, merged_ring)
-    remove_connections(network_b, connected_rings,
-                       rings_to_remove, ConnectionType.net)
-    add_connections(network_b, connected_rings,
-                    merged_ring, ConnectionType.net)
-    network_b[merged_ring]["dual"] = find_nodes_connections(
-        rings_to_merge, network_b, ConnectionType.dual)
-    network_a = replace_node_ring_connections(
-        network_a, rings_to_merge, merged_ring)
+    remove_connections(network_b, connected_rings, rings_to_remove, ConnectionType.net)
+    add_connections(network_b, connected_rings, merged_ring, ConnectionType.net)
+    network_b[merged_ring]["dual"] = find_nodes_connections(rings_to_merge, network_b, ConnectionType.dual)
+    network_a = replace_node_ring_connections(network_a, rings_to_merge, merged_ring)
     new_crds = average_coords(rings_to_merge, network_b)
     network_b[merged_ring]["crds"] = new_crds
     network_b = remove_nodes(network_b, rings_to_remove)
@@ -254,57 +249,51 @@ def remapped_node(rings_to_merge: np.ndarray, network_a: Network,
     return merged_ring, network_a, network_b
 
 
-def find_paths(node: np.int64, potential_node_cnxs: np.ndarray, network: Network) -> np.ndarray:
+def find_paths(node: int, potential_node_cnxs: np.ndarray, network: Network) -> int:
     paths = find_shared_cnxs(node, potential_node_cnxs, network)
     if not paths:
         raise ValueError("No paths found")
     return potential_node_cnxs[paths[0]]
 
 
-def create_secondary_path(node_1: np.int64, node_2: np.int64, undercoordinated_nodes: np.ndarray,
+def create_secondary_path(node: int, undercoordinated_nodes: np.ndarray,
                           broken_rings: np.ndarray, network_a: Network, network_b: Network,
                           background: np.ndarray, atoms: np.ndarray,
-                          graph_a: nx.graph, graph_b: nx.graph, clone: np.ndarray) -> tuple[Network, Network, np.ndarray, np.ndarray, np.ndarray]:
+                          graph_a: nx.graph, graph_b: nx.graph, clone: np.ndarray) -> tuple[Network, Network, int, np.ndarray, np.ndarray]:
     while undercoordinated_nodes:
         # Check if the newly formed connection is to a site with no further connections
-        if node_2 not in undercoordinated_nodes:
+        if node not in undercoordinated_nodes:
             # If so, we travel around to the next undercoordinated atom ...
-            node_2 = find_paths(node_2, undercoordinated_nodes, network_a)
+            node = find_paths(node, undercoordinated_nodes, network_a)
         check_undercoordinated(undercoordinated_nodes, network_a)
-        node_3 = find_paths(node_2, undercoordinated_nodes, network_a)
-        if node_3 not in network_a[node_2]["net"] and node_2 not in network_a[node_3]["net"]:
-            network_a[node_2]["net"] = np.append(
-                network_a[node_2]["net"], node_3)
-            network_a[node_3]["net"] = np.append(
-                network_a[node_3]["net"], node_2)
-            undercoordinated_nodes = np_remove_elements(
-                undercoordinated_nodes, node_2)
-            undercoordinated_nodes = np_remove_elements(
-                undercoordinated_nodes, node_3)
-            atoms = np.append(atoms, [node_2, node_3])
-            refresh_new_cnxs(network_a, network_b, graph_a, graph_b,
-                             atoms, undercoordinated_nodes, clone)
+        node_2 = find_paths(node, undercoordinated_nodes, network_a)
+        if node_2 not in network_a[node]["net"] and node not in network_a[node_2]["net"]:
+            network_a[node]["net"] = np.append(network_a[node]["net"], node_2)
+            network_a[node_2]["net"] = np.append(network_a[node_2]["net"], node)
+            undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node)
+            undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node_2)
+            atoms = np.append(atoms, [node, node_2])
+            refresh_new_cnxs(network_a, network_b, graph_a, graph_b, atoms, undercoordinated_nodes, clone)
             cv2.imshow("image", background)
             cv2.imshow('image', draw_line_widget.show_image())
             cv2.waitKey(0)
             for ring in broken_rings:
-                if node_2 in [i for i in network_b[ring]["dual"]] and node_3 in [i for i in network_b[ring]["dual"]]:
+                if node in network_b[ring]["dual"] and node_2 in network_b[ring]["dual"]:
                     broken_rings = np_remove_elements(broken_rings, ring)
         else:
             print("Nodes Already Connected!")
-        node_2 = node_3
+        node = node_2
 
-    network_a, network_b, new_ring = remapped_node(
-        broken_rings, network_a, network_b)
+    new_ring, network_a, network_b = remapped_node(broken_rings, network_a, network_b)
     return network_a, network_b, new_ring, broken_rings, atoms
 
 
-def create_initial_path(node_1, node_2, atoms: np.ndarray, network_1: Network, network_2: Network, undercoordinated_nodes: np.ndarray,
+def create_initial_path(node_1, node_2, atoms: np.ndarray, network_1: Network, network_2: Network,
+                        undercoordinated_nodes: np.ndarray,
                         broken_rings: np.ndarray) -> tuple:
     network_1[node_2]["net"] = np.append(network_1[node_2]["net"], node_1)
     network_1[node_1]["net"] = np.append(network_1[node_1]["net"], node_2)
-    undercoordinated_nodes = np.setdiff1d(
-        undercoordinated_nodes, np.array([node_1, node_2]))
+    undercoordinated_nodes = np.setdiff1d(undercoordinated_nodes, np.array([node_1, node_2]))
     for ring in broken_rings:
         if node_1 in network_2[ring]["dual"] and node_2 in network_2[ring]["dual"]:
             broken_rings = np_remove_elements(broken_rings, ring)
@@ -312,20 +301,21 @@ def create_initial_path(node_1, node_2, atoms: np.ndarray, network_1: Network, n
     return network_1, undercoordinated_nodes, broken_rings
 
 
-def find_shared_cnxs(node: int | np.int64, undercoordinated_nodes: np.ndarray, network: Network) -> np.ndarray:
+def find_shared_cnxs(node: int, undercoordinated_nodes: np.ndarray, network: Network) -> np.ndarray:
     node_dual = network[node]["dual"]
     shared_cnxs = np.array([])
-    for i, undercoordinated_node in enumerate(undercoordinated_nodes):
+    for undercoordinated_node in undercoordinated_nodes:
         if undercoordinated_node not in network:
-            print('This atom is deleted, code breaks here')
-            exit(1)
+            raise ValueError(f"Undercoordinated node {undercoordinated_node} not found in network")
+
         undercoordinated_node_dual = network[undercoordinated_node]["dual"]
-        shared_cnxs = np.append(shared_cnxs, len(
-            np.intersect1d(node_dual, undercoordinated_node_dual)))
+        shared_cnxs = np.append(shared_cnxs, len(np.intersect1d(node_dual, undercoordinated_node_dual)))
     # 0 connections - More than one ring apart
     # 1 connection  - One ring apart
     # 2 connections - share an edge
     # 3 connections - same node!
+
+    ######## Revisit this code ########
     paths = np.nonzero(shared_cnxs == 1)[0]
     num_ways = len(paths)
     STRINGS = {1: "One way around the ring...", 2: "Two ways around the ring...",
@@ -343,26 +333,27 @@ def find_shared_cnxs(node: int | np.int64, undercoordinated_nodes: np.ndarray, n
         print(STRINGS[num_ways])
         return paths
     print("num_ways > 5, program likely to crash")
+    return shared_cnxs
 
 
-def check_undercoordinated(uncoordinated_nodes: list[int], network: Network) -> None:
+def check_undercoordinated(uncoordinated_nodes: np.ndarray, network: Network) -> None:
+    print("Checking undercoordinated nodes...")
     for uncoordinated_node in uncoordinated_nodes:
         num_cnxs = network[uncoordinated_node]["net"].shape[0]
         if num_cnxs <= 2:
             continue
         if num_cnxs == 3:
-            print(f"{uncoordinated_node} is not undercoordinated, exiting...")
+            print(f"uncoordinated node's net: {network[uncoordinated_node]['net']}")
+            raise ValueError(f"{uncoordinated_node} is tricoordinated, exiting...")
         elif num_cnxs > 3:
-            print(f"{uncoordinated_node} is overcoordinated, exiting...")
-        print(f"uncoordinated node's net: {
-              network[uncoordinated_node]['net']}")
-        exit(1)
+            print(f"uncoordinated node's net: {network[uncoordinated_node]['net']}")
+            raise ValueError(f"{uncoordinated_node} is overcoordinated, exiting...")
+    print("Undercoordinated nodes valid.")
 
 
 def check_path(node_1: int, node_2: int, network: Network, undercoordinated: np.ndarray) -> bool:
     if node_1 not in undercoordinated or node_2 not in undercoordinated:
-        print(f"node_1: {node_1} or node)2: {
-              node_2} not found in undercoordinated: {undercoordinated}")
+        print(f"node_1: {node_1} or node)2: {node_2} not found in undercoordinated: {undercoordinated}")
         exit(1)
     if np.intersect1d(network[node_1]["net"], network[node_2]["net"]).size > 0:
         return False
@@ -374,13 +365,12 @@ def remove_deleted_nodes(deleted_nodes: list, undercoordinated_nodes: list) -> l
     print(f"Overlap before: {overlap}")
     for node in overlap:
         undercoordinated_nodes.remove(node)
-    print(f"Overlap after: {
-          set(deleted_nodes).intersection(undercoordinated_nodes)}")
+    print(f"Overlap after: {set(deleted_nodes).intersection(undercoordinated_nodes)}")
     return undercoordinated_nodes
 
 
 def export_crds(path: Path, network: Network) -> None:
-    crds_array = np.array([node["crds"] for node in network])
+    crds_array = np.array([network[node]["crds"] for node in network])
     np.savetxt(path, crds_array, fmt="%-19.6f")
 
 
@@ -392,7 +382,7 @@ def get_target_files(file_names: list, func: Callable[[str], bool]) -> list:
     return return_list
 
 
-def import_crds(path: Path) -> np.array:
+def import_crds(path: Path) -> np.ndarray:
     with open(path, "r") as crds_file:
         return np.genfromtxt(crds_file, dtype=np.float64)
 
@@ -477,7 +467,7 @@ def ordered_cnxs(network_1: Network, network_2: Network, cnx_type: str) -> dict:
             crd_1 = node_cnxs_new_crds[i - 1]
             area += crd_1[0] * crd_2[1] - crd_2[0] * crd_1[1]
         if area > 0:
-            node_cnxs_new.reverse()
+            node_cnxs_new.flip(node_cnxs_new)
         network_1[node][cnx_type] = node_cnxs_new
     return network_1
 
@@ -495,14 +485,12 @@ def write_key(path: Path, deleted_nodes: np.ndarray, network: Network) -> None:
             key_file.write(f"{node:<10}{translated_node:<10}\n")
 
 
-def write(output_path: Path, input_path: Path, network_a: Network, network_b: Network, deleted_nodes_a: np.ndarray,
-          deleted_nodes_b: np.ndarray, new_ring: int | np.int64) -> None:
+def write_netmc_data(output_path: Path, input_path: Path, network_a: Network, network_b: Network, deleted_nodes_a: np.ndarray,
+                     deleted_nodes_b: np.ndarray, new_ring: int) -> None:
     num_nodes_a = len(network_a)
     num_nodes_b = len(network_b)
-    max_cnxs_a = max([node["net"].shape[0] for node in network_a])
-    min_cnxs_a = min([node["net"].shape[0] for node in network_a])
-    max_cnxs_b = max([node["net"].shape[0] for node in network_b])
-    min_cnxs_b = min([node["net"].shape[0] for node in network_b])
+    max_cnxs_a = max([network_a[node]["net"].shape[0] for node in network_a])
+    max_cnxs_b = max([network_b[node]["net"].shape[0] for node in network_b])
 
     Path.mkdir(output_path, parents=True, exist_ok=True)
 
@@ -520,12 +508,10 @@ def write(output_path: Path, input_path: Path, network_a: Network, network_b: Ne
     output_aux_a.export(output_path, prefix="testA")
     export_crds(output_path.joinpath("testA_a_crds.dat"), network_a)
 
-    network_a_net = NetMCNets.from_array(NetworkType.A, NetworkType.A, [
-                                         node["net"] for node in network_a])
+    network_a_net = NetMCNets.from_array(NetworkType.A, NetworkType.A, [network_a[node]["net"] for node in network_a])
     network_a_net.shift_export(output_path, deleted_nodes_a, prefix="testA")
 
-    network_a_dual = NetMCNets.from_array(NetworkType.A, NetworkType.B, [
-                                          node["dual"] for node in network_a])
+    network_a_dual = NetMCNets.from_array(NetworkType.A, NetworkType.B, [network_a[node]["dual"] for node in network_a])
     deleted_nodes_b.sort(reverse=True)
     network_a_dual.shift_export(output_path, deleted_nodes_b, prefix="testA")
     input_aux_b = NetMCAux.from_file(input_path.joinpath("test_b_aux.dat"))
@@ -536,29 +522,197 @@ def write(output_path: Path, input_path: Path, network_a: Network, network_b: Ne
 
     export_crds(output_path.joinpath("testA_b_crds.dat"), network_b)
 
-    network_b_net = NetMCNets.from_array(NetworkType.B, NetworkType.B, [
-                                         node["net"] for node in network_b])
+    network_b_net = NetMCNets.from_array(NetworkType.B, NetworkType.B, [network_b[node]["net"] for node in network_b])
     network_b_net.shift_export(output_path, deleted_nodes_b, prefix="testA")
-    network_b_dual = NetMCNets.from_array(NetworkType.B, NetworkType.A, [
-                                          node["dual"] for node in network_b])
+    network_b_dual = NetMCNets.from_array(NetworkType.B, NetworkType.A, [network_b[node]["dual"] for node in network_b])
     network_b_dual.special_export(output_path, deleted_nodes_a, prefix="testA")
 
     with open(output_path.joinpath("fixed_rings.dat"), 'w') as fixed_rings_file:
-        fixed_rings_file.write("1\n")
-        fixed_rings_file.write(f"{new_ring}\n")
+        fixed_rings_file.write(f"1\n{new_ring}\n")
 
 
 def get_folder_name(network: Network, lj: bool) -> str:
     max_cnxs = max([node["net"].shape[0] for node in network])
     num_nodes = len(network)
     output_folder_name = f"{max_cnxs}_{num_nodes}_"
-    for node, info in network.values():
+    for info in network.values():
         num_node_cnxs = info["net"].shape[0]
         if num_node_cnxs < 6:
             output_folder_name += num_node_cnxs
     if lj:
         output_folder_name += "_LJ"
     return output_folder_name
+
+
+def plot_bilayer(lammps_data: LAMMPSData, path: Path, file_extension: str) -> None:
+    si_coords = lammps_data.get_coords("Si")
+    o_coords = lammps_data.get_coords("O")
+    plt.scatter(si_coords[:, 0], si_coords[:, 1], color='y', s=0.4)
+    plt.scatter(o_coords[:, 0], o_coords[:, 1], color='r', s=0.4)
+    plt.savefig(path.joinpath(f"Bilayer_Atoms.{file_extension}"))
+
+    for bond in lammps_data.bonds:
+        # Only need to check for O-Si because bond labels are
+        # sorted when the LAMMPSBond object is created in the __post_init__ method
+        if bond.label == "O-Si":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[1], atom_2_crds[1]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_Si_O_Bonds.{file_extension}"))
+    plt.clf()
+
+    plt.scatter(si_coords[:, 0], si_coords[:, 2], color='y', s=0.4)
+    plt.scatter(o_coords[:, 0], o_coords[:, 2], color='r', s=0.4)
+    for bond in lammps_data.bonds:
+        if bond.label == "O-O":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_O_O_Bonds.{file_extension}"))
+    for bond in lammps_data.bonds:
+        if bond.label != "O-O":
+            atom_1_crds = bond.atoms[0].coord
+            atom_2_crds = bond.atoms[1].coord
+            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
+            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
+    plt.savefig(path.joinpath(f"Bilayer_All_Bonds.{file_extension}"))
+    plt.clf()
+
+
+def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
+    """
+    Calculate the vector difference between two vectors, taking into account periodic boundary conditions.
+    """
+    if len(vector1) != len(vector2) or len(vector1) != len(dimensions):
+        raise ValueError("Vectors must have the same number of dimensions.")
+    difference_vector = np.subtract(vector2, vector1)
+    dimension_ranges = dimensions[:, 1] - dimensions[:, 0]
+    difference_vector = (difference_vector + dimension_ranges /
+                         2) % dimension_ranges - dimension_ranges / 2
+    return difference_vector
+
+
+def netmc_to_triangle_raft(netmc_data: NetMCData) -> LAMMPSData:
+    # This will only work for exactly hexagonal networks
+    SI_SI_DISTANCE_FACTOR = np.sqrt(32.0 / 9.0)
+    SI_SI_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * SI_SI_DISTANCE_FACTOR
+    # The last vector was originally [-0.5, -np.sqrt(3) / 3], but this seems wrong vvvvv
+    DISPLACEMENT_VECTORS_NORM = np.array([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 2]])
+    DISPLACEMENT_VECTORS_FACTORED = DISPLACEMENT_VECTORS_NORM * 0.5
+
+    triangle_raft_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=28.1, atom_style="atomic")
+    triangle_raft_lammps_data.scale_coords(SI_SI_DISTANCE_BOHR)
+    triangle_raft_lammps_data.add_atom_label("O")
+    triangle_raft_lammps_data.add_mass("O", 15.995)
+
+    dimension_ranges = triangle_raft_lammps_data.dimensions[:, 1] - triangle_raft_lammps_data.dimensions[:, 0]
+    for si_atom in triangle_raft_lammps_data.atoms:
+        bonded_si_atoms = triangle_raft_lammps_data.get_bonded_atoms(si_atom)
+        for bonded_si_atom in bonded_si_atoms:
+            vector_between_si_atoms = pbc_vector(si_atom.coord, bonded_si_atom.coord, dimension_ranges)
+            normalized_vector = vector_between_si_atoms / np.linalg.norm(vector_between_si_atoms)
+            dot_product_grades = np.abs(np.dot(normalized_vector, DISPLACEMENT_VECTORS_NORM.T))
+            selected_vector_index = np.argmin(dot_product_grades)
+            midpoint = (si_atom.coord + vector_between_si_atoms / 2) % dimension_ranges
+
+            if dot_product_grades[selected_vector_index] < 0.1:
+                oxygen_coord = midpoint + DISPLACEMENT_VECTORS_FACTORED[selected_vector_index] % dimension_ranges
+            else:
+                oxygen_coord = midpoint
+            triangle_raft_lammps_data.add_atom(LAMMPSAtom("O", oxygen_coord))
+            triangle_raft_lammps_data.add_structure(LAMMPSBond(si_atom, triangle_raft_lammps_data.atoms[-1]))
+            triangle_raft_lammps_data.add_structure(LAMMPSBond(bonded_si_atom, triangle_raft_lammps_data.atoms[-1]))
+            triangle_raft_lammps_data.add_structure(LAMMPSAngle(si_atom, triangle_raft_lammps_data.atoms[-1], bonded_si_atom))
+    triangle_raft_lammps_data.check()
+    return triangle_raft_lammps_data
+
+
+# Intercept is defined when initalising DrawLineWidget as 1? No idea why
+def write_lammps_files(path: Path, non_defect_netmc_data: NetMCData, intercept: int, triangle_raft: bool, bilayer: bool, common_files_path: Path):
+    print("Writing LAMMPS files...")
+    netmc_data = NetMCData.import_data(path, prefix="testA")
+    scaling_factor = np.sqrt(netmc_data.num_nodes_b / non_defect_netmc_data.num_nodes_b)
+
+    si_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=29.977, atom_style="atomic")
+    si_lammps_data.scale_coords(scaling_factor)
+    # Original function wrote dim lows as 0
+    si_lammps_data.export(path.joinpath("Si.data"))
+    shutil.copyfile(common_files_path.joinpath("Si.in"), path.joinpath("Si.in"))
+    shutil.copyfile(common_files_path.joinpath("PARM_Si.lammps"), path.joinpath("PARM_Si.lammps"))
+
+    c_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="C", atomic_mass=12.0000, atom_style="atomic")
+    c_lammps_data.scale_coords(1.42)
+    # Original function wrote dim lows as 0 and did not include bonds or angles
+    c_lammps_data.export(path.joinpath("C.data"))
+    shutil.copyfile(common_files_path.joinpath("C.in"), path.joinpath("C.in"))
+    shutil.copyfile(common_files_path.joinpath("PARM_C.lammps"), path.joinpath("PARM_C.lammps"))
+
+    if triangle_raft:
+        print("Writing triangle raft files...")
+        # Should we use isotopic masses or abundance based masses?
+        # For some reason the original function uses Si = 32.01 and O = 28.1, but I think this is wrong
+
+        # For Si2O3 coords, the first 2/5 of the coords are Si, the last 3/5 are O. All atoms z = 5.0
+        # For SiO2 coords, the first 1/3 are Si, the rest are O. Si z alternates between 5 and 11.081138669036534 (5 + 2 * Si-O length)
+        # The O coords in SiO2, the first 1/4 are z = 8.040569334518267, last 3/4 alternate between 3.9850371001619402, 12.096101568874595 (8.040569334518267 + 2 * Si-O length)
+
+        shutil.copyfile(common_files_path.joinpath("Si2O3.in"), path.joinpath("Si2O3.in"))
+
+        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
+        triangle_raft_lammps_data.export(path.joinpath("Si2O3.data"))
+
+        with open(path.joinpath("PARM_Si2O3.lammps"), 'w') as output_file:
+            output_file.write(f"pair_style lj/cut {O_O_DISTANCE_BOHR * intercept}\n")
+            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}")
+            output_file.write("pair_modify shift yes\n")
+            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
+            output_file.write('bond_style harmonic\n')
+            output_file.write('bond_coeff 2 1.001 2.86667626014\n')
+            output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
+
+        triangle_raft_lammps_data.export_bonds(path.joinpath("Si2O3_harmpairs.dat"))
+
+    if bilayer:
+        print("Writing bilayer files...")
+        shutil.copyfile(common_files_path.joinpath("SiO2.in"), path.joinpath("SiO2.in"))
+        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
+        triangle_raft_lammps_data.make_3d()
+        # All atoms now have z = 0
+        bilayer_lammps_data = LAMMPSData()
+        bilayer_lammps_data.add_atom_label("Si")
+        bilayer_lammps_data.add_atom_label("O")
+        bilayer_lammps_data.add_mass("Si", 28.1)
+        bilayer_lammps_data.add_mass("O", 15.995)
+        for atom in triangle_raft_lammps_data.atoms:
+            if atom.label == "Si":
+                bottom_si_atom = LAMMPSAtom(atom.coord + np.array([0, 0, 5]), "Si")
+                top_si_atom = LAMMPSAtom(atom.coord + np.array([0, 0, 5 + 2 * SI_O_LENGTH_BOHR]), "Si")
+                central_o_atom = LAMMPSAtom(atom.coord + np.array([0, 0, 5 + SI_O_LENGTH_BOHR]), "O")
+                bilayer_lammps_data.add_atom(bottom_si_atom)
+                bilayer_lammps_data.add_atom(top_si_atom)
+                bilayer_lammps_data.add_atom(central_o_atom)
+            if atom.label == "O":
+                bottom_o_atom = LAMMPSAtom(atom.coord + np.array([0, 0, 5 - H_BOHR]), "O")
+                top_o_atom = LAMMPSAtom(atom.coord + np.array([0, 0, 5 + H_BOHR + 2 * SI_O_LENGTH_BOHR]), "O")
+                bilayer_lammps_data.add_atom(top_o_atom)
+                bilayer_lammps_data.add_atom(bottom_o_atom)
+
+        bilayer_lammps_data.bond_atoms_within_distance(1.1 * SI_O_LENGTH_BOHR)
+        bilayer_lammps_data.export(path.joinpath("SiO2.data"))
+        bilayer_lammps_data.export_bonds(path.joinpath("SiO2_harmpairs.dat"))
+
+        with open(path.joinpath("PARM_SiO2.lammps"), 'w') as output_file:
+            output_file.write('pair_style lj/cut {:}\n'.format(O_O_DISTANCE_BOHR * intercept))
+            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}\n")
+            output_file.write("pair_modify shift yes\n")
+            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
+            output_file.write('bond_style harmonic\n')
+            output_file.write('bond_coeff 2 1.001 3.0405693345182674\n')
+            output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
+
+    print("Finished writing LAMMPS files.")
 
 
 class DrawLineWidget:
@@ -600,10 +754,8 @@ class DrawLineWidget:
                 if selected_node not in self.network_a[bonded_node]["net"]:
                     print("#" * 40)
                     print("Selected node not found in bonded node's network")
-                    print(f"selected_node: {
-                          selected_node}\tbonded_node: {bonded_node}")
-                    print(f"selected_node['net']: {
-                          selected_node['net']}\tbonded_node['net']: {bonded_node['net']}\n")
+                    print(f"selected_node: {selected_node}\tbonded_node: {bonded_node}")
+                    print(f"selected_node['net']: {selected_node['net']}\tbonded_node['net']: {bonded_node['net']}\n")
                     broken_nodes.append(selected_node)
                     broken_nodes.append(bonded_node)
         if len(broken_nodes) == 0:
@@ -690,195 +842,12 @@ class DrawLineWidget:
                 cv2.imshow('image', draw_line_widget.show_image())
                 cv2.waitKey(1)
                 output_folder_name = get_folder_name(local_nodes, self.lj)
-                write(output_path.joinpath(output_folder_name), input_path, local_nodes, self.network_b,
-                      self.deleted_nodes, self.rings_to_remove, self.new_ring)
-                make_crds_marks_bilayer(
-                    output_folder_name, self.lj, True, True)
+                write_netmc_data(output_path.joinpath(output_folder_name), input_path, local_nodes, self.network_b,
+                                 self.deleted_nodes, self.rings_to_remove, self.new_ring)
+                write_lammps_files(output_folder_name, self.lj, True, True)
 
     def show_image(self):
         return self.clone
-
-
-# Constants
-ANGSTROM_TO_BOHR = 1 / 0.52917721090380
-O_O_DISTANCE_FACTOR = np.sqrt(8.0 / 3.0)
-SI_O_LENGTH_ANGSTROM = 1.609
-H_ANGLE_DEGREES = 19.5
-
-# Scaling factors
-SI_O_LENGTH_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM
-O_O_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * O_O_DISTANCE_FACTOR
-H_BOHR = ANGSTROM_TO_BOHR * np.sin(np.radians(H_ANGLE_DEGREES)) * SI_O_LENGTH_ANGSTROM
-
-
-def plot_bilayer(lammps_data: LAMMPSData, path: Path, file_extension: str) -> None:
-    si_coords = lammps_data.get_coords("Si")
-    o_coords = lammps_data.get_coords("O")
-    plt.scatter(si_coords[:, 0], si_coords[:, 1], color='y', s=0.4)
-    plt.scatter(o_coords[:, 0], o_coords[:, 1], color='r', s=0.4)
-    plt.savefig(path.joinpath(f"Bilayer_Atoms.{file_extension}"))
-
-    for bond in lammps_data.bonds:
-        # Only need to check for O-Si because bond labels are
-        # sorted when the LAMMPSBond object is created in the __post_init__ method
-        if bond.label == "O-Si":
-            atom_1_crds = bond.atoms[0].coord
-            atom_2_crds = bond.atoms[1].coord
-            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
-            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[1], atom_2_crds[1]], color='k')
-    plt.savefig(path.joinpath(f"Bilayer_Si_O_Bonds.{file_extension}"))
-    plt.clf()
-
-    plt.scatter(si_coords[:, 0], si_coords[:, 2], color='y', s=0.4)
-    plt.scatter(o_coords[:, 0], o_coords[:, 2], color='r', s=0.4)
-    for bond in lammps_data.bonds:
-        if bond.label == "O-O":
-            atom_1_crds = bond.atoms[0].coord
-            atom_2_crds = bond.atoms[1].coord
-            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
-            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
-    plt.savefig(path.joinpath(f"Bilayer_O_O_Bonds.{file_extension}"))
-    for bond in lammps_data.bonds:
-        if bond.label != "O-O":
-            atom_1_crds = bond.atoms[0].coord
-            atom_2_crds = bond.atoms[1].coord
-            atom_2_crds = np.add(atom_1_crds, pbc_vector(atom_1_crds, atom_2_crds, lammps_data.dimensions))
-            plt.plot([atom_1_crds[0], atom_2_crds[0]], [atom_1_crds[2], atom_2_crds[2]], color='k')
-    plt.savefig(path.joinpath(f"Bilayer_All_Bonds.{file_extension}"))
-    plt.clf()
-
-
-def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
-    """
-    Calculate the vector difference between two vectors, taking into account periodic boundary conditions.
-    """
-    if len(vector1) != len(vector2) or len(vector1) != len(dimensions):
-        raise ValueError("Vectors must have the same number of dimensions.")
-    difference_vector = np.subtract(vector2, vector1)
-    dimension_ranges = dimensions[:, 1] - dimensions[:, 0]
-    difference_vector = (difference_vector + dimension_ranges /
-                         2) % dimension_ranges - dimension_ranges / 2
-    return difference_vector
-
-
-def netmc_to_triangle_raft(netmc_data: NetMCData) -> LAMMPSData:
-    SI_SI_DISTANCE_FACTOR = np.sqrt(32.0 / 9.0)
-    SI_SI_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * SI_SI_DISTANCE_FACTOR
-    # The last vector was originally [-0.5, -np.sqrt(3) / 3], but this seems wrong vvvvv
-    DISPLACEMENT_VECTORS_NORM = np.array([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 2]])
-    DISPLACEMENT_VECTORS_FACTORED = DISPLACEMENT_VECTORS_NORM * 0.5
-
-    triangle_raft_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=28.1, atom_style="atomic")
-    triangle_raft_lammps_data.scale_coords(SI_SI_DISTANCE_BOHR)
-    triangle_raft_lammps_data.add_atom_label("O")
-    triangle_raft_lammps_data.add_mass("O", 15.995)
-
-    dimension_ranges = triangle_raft_lammps_data.dimensions[:, 1] - triangle_raft_lammps_data.dimensions[:, 0]
-    for si_atom in triangle_raft_lammps_data.atoms:
-        bonded_si_atoms = triangle_raft_lammps_data.get_bonded_atoms(si_atom)
-        for bonded_si_atom in bonded_si_atoms:
-            vector_between_si_atoms = pbc_vector(si_atom.coords, bonded_si_atom.coords, dimension_ranges)
-            normalized_vector = vector_between_si_atoms / np.linalg.norm(vector_between_si_atoms)
-            dot_product_grades = np.abs(np.dot(normalized_vector, DISPLACEMENT_VECTORS_NORM.T))
-            selected_vector_index = np.argmin(dot_product_grades)
-            midpoint = (si_atom.coords + vector_between_si_atoms / 2) % dimension_ranges
-
-            if dot_product_grades[selected_vector_index] < 0.1:
-                oxygen_coord = midpoint + DISPLACEMENT_VECTORS_FACTORED[selected_vector_index] % dimension_ranges
-            else:
-                oxygen_coord = midpoint
-            triangle_raft_lammps_data.add_atom(LAMMPSAtom("O", oxygen_coord))
-            triangle_raft_lammps_data.add_structure(LAMMPSBond(si_atom, triangle_raft_lammps_data.atoms[-1]))
-            triangle_raft_lammps_data.add_structure(LAMMPSBond(bonded_si_atom, triangle_raft_lammps_data.atoms[-1]))
-            triangle_raft_lammps_data.add_structure(LAMMPSAngle(si_atom, triangle_raft_lammps_data.atoms[-1], bonded_si_atom))
-    triangle_raft_lammps_data.check()
-    return triangle_raft_lammps_data
-
-
-# Intercept is defined when initalising DrawLineWidget as 1? No idea why
-def write_lammps_files(path: Path, non_defect_netmc_data: NetMCData, intercept: int, triangle_raft: bool, bilayer: bool, common_files_path: Path):
-    print("Writing LAMMPS files...")
-    netmc_data = NetMCData.import_data(path, prefix="testA")
-    scaling_factor = np.sqrt(netmc_data.num_nodes_b / non_defect_netmc_data.num_nodes_b)
-
-    si_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="Si", atomic_mass=29.977, atom_style="atomic")
-    si_lammps_data.scale_coords(scaling_factor)
-    # Original function wrote dim lows as 0
-    si_lammps_data.export(path.joinpath("Si.data"))
-    shutil.copyfile(common_files_path.joinpath("Si.in"), path.joinpath("Si.in"))
-    shutil.copyfile(common_files_path.joinpath("PARM_Si.lammps"), path.joinpath("PARM_Si.lammps"))
-
-    c_lammps_data = LAMMPSData.from_netmc_data(netmc_data, NetworkType.A, atom_label="C", atomic_mass=12.0000, atom_style="atomic")
-    c_lammps_data.scale_coords(1.42)
-    # Original function wrote dim lows as 0 and did not include bonds or angles
-    c_lammps_data.export(path.joinpath("C.data"))
-    shutil.copyfile(common_files_path.joinpath("C.in"), path.joinpath("C.in"))
-    shutil.copyfile(common_files_path.joinpath("PARM_C.lammps"), path.joinpath("PARM_C.lammps"))
-
-    if triangle_raft:
-        print("Writing triangle raft files...")
-        # Should we use isotopic masses or abundance based masses?
-        # For some reason the original function uses Si = 32.01 and O = 28.1, but I think this is wrong
-
-        # For Si2O3 coords, the first 2/5 of the coords are Si, the last 3/5 are O. All atoms z = 5.0
-        # For SiO2 coords, the first 1/3 are Si, the rest are O. Si z alternates between 5 and 11.081138669036534 (5 + 2 * Si-O length)
-        # The O coords in SiO2, the first 1/4 are z = 8.040569334518267, last 3/4 alternate between 3.9850371001619402, 12.096101568874595 (8.040569334518267 + 2 * Si-O length)
-
-        shutil.copyfile(common_files_path.joinpath("Si2O3.in"), path.joinpath("Si2O3.in"))
-
-        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
-        triangle_raft_lammps_data.export(path.joinpath("Si2O3.data"))
-
-        with open(path.joinpath("PARM_Si2O3.lammps"), 'w') as output_file:
-            output_file.write(f"pair_style lj/cut {O_O_DISTANCE_BOHR * intercept}\n")
-            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}")
-            output_file.write("pair_modify shift yes\n")
-            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
-            output_file.write('bond_style harmonic\n')
-            output_file.write('bond_coeff 2 1.001 2.86667626014\n')
-            output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
-
-        triangle_raft_lammps_data.export_bonds(path.joinpath("Si2O3_harmpairs.dat"))
-
-    if bilayer:
-        print("Writing bilayer files...")
-        shutil.copyfile(common_files_path.joinpath("SiO2.in"), path.joinpath("SiO2.in"))
-        triangle_raft_lammps_data = netmc_to_triangle_raft(netmc_data)
-        triangle_raft_lammps_data.make_3d()
-        # All atoms now have z = 0
-        bilayer_lammps_data = LAMMPSData()
-        bilayer_lammps_data.add_atom_label("Si")
-        bilayer_lammps_data.add_atom_label("O")
-        bilayer_lammps_data.add_mass("Si", 28.1)
-        bilayer_lammps_data.add_mass("O", 15.995)
-        for atom in triangle_raft_lammps_data.atoms:
-            if atom.label == "Si":
-                bottom_si_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5]), "Si")
-                top_si_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + 2 * SI_O_LENGTH_BOHR]), "Si")
-                central_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + SI_O_LENGTH_BOHR]), "O")
-                bilayer_lammps_data.add_atom(bottom_si_atom)
-                bilayer_lammps_data.add_atom(top_si_atom)
-                bilayer_lammps_data.add_atom(central_o_atom)
-            if atom.label == "O":
-                bottom_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 - H_BOHR]), "O")
-                top_o_atom = LAMMPSAtom(atom.coords + np.array([0, 0, 5 + H_BOHR + 2 * SI_O_LENGTH_BOHR]), "O")
-                bilayer_lammps_data.add_atom(top_o_atom)
-                bilayer_lammps_data.add_atom(bottom_o_atom)
-
-        bilayer_lammps_data.bond_atoms_within_distance(1.1 * SI_O_LENGTH_BOHR)
-        bilayer_lammps_data.export(path.joinpath("SiO2.data"))
-        bilayer_lammps_data.export_bonds(path.joinpath("SiO2_harmpairs.dat"))
-
-        with open(path.joinpath("PARM_SiO2.lammps"), 'w') as output_file:
-            output_file.write('pair_style lj/cut {:}\n'.format(O_O_DISTANCE_BOHR * intercept))
-            output_file.write(f"pair_coeff * * 0.1 {O_O_DISTANCE_BOHR * intercept / 2**(1 / 6)} {O_O_DISTANCE_BOHR * intercept}\n")
-            output_file.write("pair_modify shift yes\n")
-            output_file.write("special_bonds lj 0.0 1.0 1.0\n")
-            output_file.write('bond_style harmonic\n')
-            output_file.write('bond_coeff 2 1.001 3.0405693345182674\n')
-            output_file.write('bond_coeff 1 1.001 4.965228931415713\n')
-
-    print("Finished writing LAMMPS files.")
 
 
 if __name__ == '__main__':

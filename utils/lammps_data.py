@@ -270,6 +270,8 @@ class LAMMPSData:
         if atom.label not in self.atom_labels.values():
             self.add_atom_label(atom.label)
         atom.id = self.num_atoms + 1
+        if atom.style == "molecular":
+            atom.molecule_id = atom.id
         self.atoms.append(atom)
         self.num_atoms += 1
 
@@ -480,7 +482,7 @@ class LAMMPSAtom:
 
 @dataclass
 class LAMMPSMolecule(LAMMPSAtom):
-    molecule_id: int
+    molecule_id: Optional[int] = None
 
     def __post_init__(self):
         super().__post_init__()
