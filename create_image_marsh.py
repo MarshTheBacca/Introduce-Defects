@@ -13,20 +13,6 @@ import numpy as np
 from utils import (LAMMPSAngle, LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCAux,
                    NetMCData, NetMCNets, NetworkType)
 
-# The comment he's included in C.data 'Atoms' line is wrong, the atoms are being stored as regular atoms, not molecules
-# since there is a missing molecule ID column.
-
-# Comment for Masses in C.data is incorrect, should be 'C' not 'Si'
-
-# For some reason, he's written Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with different molecule IDs
-
-# In C.data, Si.data, all atoms have a z coordinate of 0
-# In SiO2.data, all Si atoms alternate between z = 5 and z = 11.081138669036534
-# In SiO2.data, the first 1/3 of O atoms have z = 8.040569334518267, then they alternate between z = 3.9850371001619402, z = 12.096101568874595
-# In Si2O3.data, all atoms have z = 5
-
-# Need to have a look at his C++ source code to see how *.data, *.in and *.lammps are being used
-# And therefore if any corrections are in order for how he writes these files.
 
 Network: TypeAlias = dict[int, dict]
 
@@ -65,9 +51,9 @@ def get_close_node(node_positions: dict, coordinate: np.ndarray) -> int | None:
     return None
 
 
-def left_click(coordinate: np.ndarray, graph_a: nx.graph, network_a: Network, network_b: Network,
+def left_click(coordinate: np.ndarray, graph_a: nx.Graph, network_a: Network, network_b: Network,
                deleted_nodes: np.ndarray, broken_rings: np.ndarray, undercoordinated_nodes: np.ndarray,
-               image: np.ndarray):
+               background_image: np.ndarray):
     print("Left click detected at coordinates: ", coordinate)
     node_pos = nx.get_node_attributes(graph_a, "pos")
     close_node = get_close_node(node_pos, coordinate)
@@ -88,8 +74,8 @@ def left_click(coordinate: np.ndarray, graph_a: nx.graph, network_a: Network, ne
         if node in deleted_nodes:
             undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node)
     del network_a[close_node]
-    refresh_new_cnxs(network_a, network_b, graph_a, graph_b,
-                     np.array([]), undercoordinated_nodes, image)
+    image, graph_a, graph_b = refresh_new_cnxs(network_a, network_b, graph_a, graph_b,
+                                               np.array([]), undercoordinated_nodes, background_image)
     cv2.imshow("image", image)
     print("Waiting...")
     return network_a, network_b, deleted_nodes, broken_rings, undercoordinated_nodes
@@ -106,7 +92,7 @@ def rekey(network: Network, deleted_nodes: np.ndarray) -> dict[int, int]:
     return key
 
 
-def update_graph(graph: nx.graph, network: Network) -> None:
+def update_graph(graph: nx.Graph, network: Network) -> None:
     graph.clear()
     graph = get_graph(network)
     return graph
@@ -129,14 +115,14 @@ def draw_line(image: np.ndarray, coord_1: tuple[float, float], coord_2: tuple[fl
              (int(x_coord_1), int(y_coord_1)), color, thickness)
 
 
-def draw_nodes(image: np.ndarray, graph: nx.graph,
+def draw_nodes(image: np.ndarray, graph: nx.Graph,
                colour: tuple[int, int, int], thickness: float) -> None:
     coords = nx.get_node_attributes(graph, 'pos').values()
     for coord in coords:
         draw_circle(image, coord, int(0.1 * scale), colour, thickness)
 
 
-def draw_cnxs(image: np.ndarray, graph: nx.graph,
+def draw_cnxs(image: np.ndarray, graph: nx.Graph,
               colour: tuple[int, int, int], thickness: float) -> None:
     coords = nx.get_node_attributes(graph, 'pos')
     for node in graph:
@@ -151,11 +137,12 @@ def draw_cnxs(image: np.ndarray, graph: nx.graph,
 
 
 def refresh_new_cnxs(network_a: Network, network_b: Network,
-                     graph_a: nx.graph, graph_b: nx.graph, atoms: np.ndarray,
-                     undercoordinated_nodes: np.ndarray, image) -> None:
+                     graph_a: nx.Graph, graph_b: nx.Graph, atoms: np.ndarray,
+                     undercoordinated_nodes: np.ndarray, background_image: np.ndarray) -> tuple[np.ndarray, nx.Graph, nx.Graph]:
     graph_a = update_graph(graph_a, network_a)
     graph_b = update_graph(graph_b, network_b)
 
+    image = background_image.copy()
     draw_nodes(image, graph_a, (255, 0, 0), -1)
     draw_nodes(image, graph_b, (0, 255, 0), -1)
     draw_cnxs(image, graph_a, (255, 36, 12), 2)
@@ -177,6 +164,7 @@ def refresh_new_cnxs(network_a: Network, network_b: Network,
     for i in range(0, len(atoms) - 1, 2):
         draw_line(image, network_a[atoms[i]]["crds"],
                   network_a[atoms[i + 1]]["crds"], (1, 1, 1), 5)
+    return image, graph_a, graph_b
 
 
 def np_remove_elements(array: np.ndarray, elements_to_remove: np.ndarray) -> np.ndarray:
@@ -258,8 +246,8 @@ def find_paths(node: int, potential_node_cnxs: np.ndarray, network: Network) -> 
 
 def create_secondary_path(node: int, undercoordinated_nodes: np.ndarray,
                           broken_rings: np.ndarray, network_a: Network, network_b: Network,
-                          background: np.ndarray, atoms: np.ndarray,
-                          graph_a: nx.graph, graph_b: nx.graph, clone: np.ndarray) -> tuple[Network, Network, int, np.ndarray, np.ndarray]:
+                          background_image: np.ndarray, atoms: np.ndarray,
+                          graph_a: nx.Graph, graph_b: nx.Graph) -> tuple[Network, Network, int, np.ndarray, np.ndarray]:
     while undercoordinated_nodes:
         # Check if the newly formed connection is to a site with no further connections
         if node not in undercoordinated_nodes:
@@ -273,9 +261,8 @@ def create_secondary_path(node: int, undercoordinated_nodes: np.ndarray,
             undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node)
             undercoordinated_nodes = np_remove_elements(undercoordinated_nodes, node_2)
             atoms = np.append(atoms, [node, node_2])
-            refresh_new_cnxs(network_a, network_b, graph_a, graph_b, atoms, undercoordinated_nodes, clone)
-            cv2.imshow("image", background)
-            cv2.imshow('image', draw_line_widget.show_image())
+            image, graph_a, graph_b = refresh_new_cnxs(network_a, network_b, graph_a, graph_b, atoms, undercoordinated_nodes, background_image)
+            cv2.imshow('image', image)
             cv2.waitKey(0)
             for ring in broken_rings:
                 if node in network_b[ring]["dual"] and node_2 in network_b[ring]["dual"]:
@@ -715,10 +702,32 @@ def write_lammps_files(path: Path, non_defect_netmc_data: NetMCData, intercept: 
     print("Finished writing LAMMPS files.")
 
 
+def main():
+    cwd = Path(__file__).parent
+    common_files_path = cwd.joinpath(cwd, "common_files")
+    input_path = cwd.joinpath("input_files")
+    output_path = cwd.joinpath("output_files")
+    prefix = find_prefix(input_path)
+    non_defect_netmc_data = NetMCData.import_data(input_path, prefix=prefix)
+
+    image = cv2.imread(str(cwd.joinpath("background.png")))
+
+    cv2.namedWindow("Image")
+    cv2.setMouseCallback("Image", mouse_callback)
+
+    while True:
+        cv2.imshow("Image", image)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+
+    cv2.destroyAllWindows()
+
+
 class DrawLineWidget:
     def __init__(self, output_path):
-        self.original_image = cv2.imread("bg.png")
-        self.clone = copy.deepcopy(self.original_image)
+        self.background = cv2.imread("bg.png")
+        self.image = copy.deepcopy(self.background)
         self.new_ring = 0
         self.lj = 1
         self.network_a, self.network_b, self.graph_a, self.graph_b = network_a, network_b, graph_a, graph_b
@@ -739,37 +748,15 @@ class DrawLineWidget:
 
         global scale, X_OFFSET, Y_OFFSET
         scale = int(1000 / np.sqrt(len(network_b)))
-        refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
-                         [], self.undercoordinated, self.clone)
-
-    def check(self):
-        print("Checking for broken nodes...\n")
-        broken_nodes = []
-        for selected_node in self.network_a:
-            if selected_node not in self.network_a:
-                print(f"Node not found in network_a: {selected_node}")
-            for bonded_node in self.network_a[selected_node]["net"]:
-                if bonded_node not in self.network_a:
-                    print(f"Bonded node not found in network_a: {bonded_node}")
-                if selected_node not in self.network_a[bonded_node]["net"]:
-                    print("#" * 40)
-                    print("Selected node not found in bonded node's network")
-                    print(f"selected_node: {selected_node}\tbonded_node: {bonded_node}")
-                    print(f"selected_node['net']: {selected_node['net']}\tbonded_node['net']: {bonded_node['net']}\n")
-                    broken_nodes.append(selected_node)
-                    broken_nodes.append(bonded_node)
-        if len(broken_nodes) == 0:
-            print("No broken nodes detected!\n")
-        else:
-            print("Broken nodes detected, exiting...")
-            exit(1)
+        self.image, self.graph_a, self.graph_b = refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
+                                                                  [], self.undercoordinated, self.background)
 
     def extract_coordinates(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             print("EC")
             print(self.graph_a)
             self.network_a, self.network_b, self.deleted_nodes, self.broken_rings, self.undercoordinated = left_click(np.array([x, y]), self.graph_a, self.network_a, self.network_b, self.deleted_nodes,
-                                                                                                                      self.broken_rings, self.undercoordinated, self.clone)
+                                                                                                                      self.broken_rings, self.undercoordinated, self.image)
         if event == cv2.EVENT_RBUTTONDOWN:
             print("Recombining...")
             # Check that these two lists don't overlap!
@@ -787,9 +774,9 @@ class DrawLineWidget:
             atoms = np.array([starting_node])
 
             # Visualise
-            self.clone = self.original_image.copy()
-            self.refresh_new_cnxs(atoms)
-            cv2.imshow("image", self.clone)
+            self.image, self.graph_a, self.graph_b = refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
+                                                                      atoms, self.undercoordinated, self.background_image)
+            cv2.imshow("image", self.image)
             paths = find_shared_cnxs(
                 starting_node, self.undercoordinated, self.network_a)
             atom_a, atom_b = -1, -1
@@ -808,10 +795,9 @@ class DrawLineWidget:
                     elif atom_b == -1:
                         atom_b = self.undercoordinated[paths[2]]
 
-            self.clone = self.original_image.copy()
-            self.refresh_new_cnxs(atoms)
-            cv2.imshow("image", self.clone)
-            cv2.imshow('image', draw_line_widget.show_image())
+            self.image, self.graph_a, self.graph_b = refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
+                                                                      atoms, self.undercoordinated, self.background)
+            cv2.imshow("image", self.image)
             cv2.waitKey(1)
             print('############ Initial Broken Rings : ', self.broken_rings)
             print('>>>>>>>>>>>> Initial Undercoordinated : ',
@@ -823,31 +809,31 @@ class DrawLineWidget:
                                                                                               self.network_a, self.network_b,
                                                                                               self.undercoordinated, self.broken_rings)
 
-                self.clone = self.original_image.copy()
-                self.refresh_new_cnxs(atoms)
-                cv2.imshow("image", self.clone)
-                cv2.imshow('image', draw_line_widget.show_image())
+                self.image, self.graph_a, self.graph_b = refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
+                                                                          atoms, self.undercoordinated, self.background)
+                cv2.imshow("image", self.image)
                 cv2.waitKey(1)
-                print('############ One Connection Broken Rings : ',
-                      self.broken_rings)
-                print('>>>>>>>>>>>> One Connection Undercoordinated : ',
-                      self.undercoordinated)
+                print('############ One Connection Broken Rings : ', self.broken_rings)
+                print('>>>>>>>>>>>> One Connection Undercoordinated : ', self.undercoordinated)
                 self.network_a, self.network_b, self.new_ring, self.broken_rings, self.atoms = create_secondary_path(starting_node, atom_a, local_undercoordinated, local_broken_rings,
-                                                                                                                     self.network_a, self.network_b_copy, self.original_image, self.atoms,
-                                                                                                                     self.graph_a, self.graph_b, self.clone)
+                                                                                                                     self.network_a, self.network_b_copy, self.background, self.atoms,
+                                                                                                                     self.graph_a, self.graph_b, self.image)
                 create_secondary_path(starting_node, atom_a, local_undercoordinated,
                                       local_broken_rings, self.network_a, self.network_b_copy)
-                self.refresh_new_cnxs(atoms)
-                cv2.imshow("image", self.clone)
-                cv2.imshow('image', draw_line_widget.show_image())
+
+                self.image, self.graph_a, self.graph_b = refresh_new_cnxs(self.network_a, self.network_b, self.graph_a, self.graph_b,
+                                                                          atoms, self.undercoordinated, self.background)
+
+                cv2.imshow("image", self.image)
                 cv2.waitKey(1)
                 output_folder_name = get_folder_name(local_nodes, self.lj)
                 write_netmc_data(output_path.joinpath(output_folder_name), input_path, local_nodes, self.network_b,
                                  self.deleted_nodes, self.rings_to_remove, self.new_ring)
+                # write_lammps_files(output_folder_name, non_defect_netmc_data, intercept (=1), triangle_raft (=True), bilayer (=True), common_files_path)
                 write_lammps_files(output_folder_name, self.lj, True, True)
 
     def show_image(self):
-        return self.clone
+        return self.image
 
 
 if __name__ == '__main__':
