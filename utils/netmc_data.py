@@ -1,371 +1,504 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
+from scipy.spatial import KDTree
+
+NETWORK_TYPE_MAP = {"base": "A", "ring": "B"}
 
 
-class NetworkType(Enum):
-    A: str = "A"
-    B: str = "B"
-
-
-CONNECTED_MAP = {NetworkType.A: {NetworkType.A: "net", NetworkType.B: "dual"},
-                 NetworkType.B: {NetworkType.A: "dual", NetworkType.B: "net"}}
-NETMC_FILE_SUFFIXES = ("_A_aux.dat", "_A_crds.dat", "_A_net.dat", "_A_dual.dat",
-                       "_B_aux.dat", "_B_crds.dat", "_B_net.dat", "_A_dual.dat")
-
-
-def np_delete_element(array: np.ndarray, target) -> np.ndarray:
-    index = np.nonzero(array == target)
-    return np.delete(array, index)
-
-
-def get_dim(array: np.ndarray, col_index: int, minimum: bool = False) -> float | np.float64:
-    """Return the minimum or maximum value of a column of a 2D array.
-    minimum = True means return minimum, else, return maximum
-    """
-    if minimum:
-        return min(array[:, col_index])
-    return max(array[:, col_index])
-
-
-def shift_nodes(array: np.ndarray, deleted_node: int | np.int64) -> np.ndarray:
+def shift_nodes(array: np.ndarray, deleted_node: int) -> np.ndarray:
     for i, node in enumerate(array):
         if node > deleted_node:
             array[i] -= 1
     return array
 
 
-def check_nets(net_1: NetMCNets, net_2: NetMCNets) -> bool:
-    valid = True
-    for selected_node, net in enumerate(net_1.nets):
-        for bonded_node in net:
-            if selected_node not in net_2.nets[bonded_node]:
-                print(f"Selected node not in bonded node's net: {selected_node}\n"
-                      "Bonded node's net: {self.net_a.nets[bonded_node]}")
-                valid = False
-    return valid
+def get_nodes(path: Path, network_type: str) -> list[NetMCNode]:
+    if network_type not in ("base", "ring"):
+        raise ValueError("Invalid network type {network_type}")
+    coords = np.genfromtxt(path)
+    nodes = [NetMCNode(coord, id, network_type) for id, coord in enumerate(coords)]
+    return nodes
 
 
-def compare_aux_dim_crd_dim(aux_dim: float | np.float64, crd_dim: float | np.float64,
-                            network_type: NetworkType, dim_string: str) -> bool:
-    if "lo" in dim_string:
-        if aux_dim > crd_dim:
-            print(f"aux_{network_type.value} {dim_string} greater than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
-            return False
-    elif "hi" in dim_string:
-        if aux_dim < crd_dim:
-            print(f"aux_{network_type.value} {dim_string} less than crds_{network_type.value} {dim_string}: {aux_dim:<10}\t{crd_dim:<10}")
-            return False
-    elif aux_dim != crd_dim:
-        print(f"Inconsistent dimensions in aux_{network_type.value} and crds_{network_type.value} (safe to ignore): {aux_dim:<10}\t{crd_dim:<10}")
-    return True
+def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: list[NetMCNode]) -> None:
+    with open(path, "r") as net_file:
+        for selected_node, net in enumerate(net_file):
+            connected_nodes = net.strip().split()
+            for connected_node in connected_nodes:
+                node_1 = selected_nodes[selected_node]
+                node_2 = bonded_nodes[int(connected_node)]
+                if node_2.type == node_1.type and node_2 not in node_1.neighbours:
+                    node_1.add_neighbour(node_2)
+                elif node_2.type != node_1.type and node_2 not in node_1.ring_neighbours:
+                    node_1.add_ring_neighbour(node_2)
 
 
-def get_graph(coords: np.ndarray, nets: NetMCNets) -> nx.Graph:
-    graph = nx.Graph()
-    for selected_node, coord in enumerate(coords):
-        graph.add_node(selected_node, pos=coord)
-        for bonded_node in nets.nets[selected_node]:
-            graph.add_edge(selected_node, bonded_node)
-    return graph
+def get_geom_code(path: Path) -> str:
+    with open(path, "r") as aux_file:
+        aux_file.readline()
+        aux_file.readline()
+        geom_code = aux_file.readline().strip()
+    return geom_code
+
+
+def settify(iterable: list) -> list:
+    return_list = []
+    for item in iterable:
+        if item not in return_list:
+            return_list.append(item)
+    return return_list
+
+
+def find_common_elements(lists: list[list]) -> list:
+    first_list = lists[0]
+    common_elements = [element for element in first_list if all(element in lst for lst in lists[1:])]
+    return common_elements
 
 
 @dataclass
 class NetMCData:
-    aux_a: NetMCAux
-    aux_b: NetMCAux
-    crds_a: np.ndarray
-    crds_b: np.ndarray
-    net_a: NetMCNets
-    net_b: NetMCNets
-    dual_a: NetMCNets
-    dual_b: NetMCNets
-
-    def __post_init__(self):
-        self.num_nodes_a = len(self.crds_a)
-        self.num_nodes_b = len(self.crds_b)
-
-    def delete_node(self, deleted_node: int | np.int64, deleted_node_network: str):
-        if NetworkType(deleted_node_network) == NetworkType.A:
-            self.crds_a = np.delete(self.crds_a, deleted_node, axis=0)
-            self.num_nodes_a -= 1
-        elif NetworkType(deleted_node_network) == NetworkType.B:
-            self.crds_b = np.delete(self.crds_b, deleted_node, axis=0)
-            self.num_nodes_b -= 1
-        self.aux_a.delete_node(NetworkType(deleted_node_network))
-        self.aux_b.delete_node(NetworkType(deleted_node_network))
-        self.net_a.delete_node(deleted_node, NetworkType(deleted_node_network))
-        self.net_b.delete_node(deleted_node, NetworkType(deleted_node_network))
-        self.dual_a.delete_node(deleted_node, NetworkType(deleted_node_network))
-        self.dual_b.delete_node(deleted_node, NetworkType(deleted_node_network))
-        self.refresh_auxs()
-
-    def refresh_auxs(self):
-        self.aux_a.refresh(self.num_nodes_a, self.net_a.get_max_cnxs(), self.dual_a.get_max_cnxs(),
-                           get_dim(self.crds_a, 0, minimum=True), get_dim(
-                               self.crds_a, 0),
-                           get_dim(self.crds_a, 1, minimum=True), get_dim(self.crds_a, 1))
-        self.aux_b.refresh(self.num_nodes_b, self.net_b.get_max_cnxs(), self.dual_b.get_max_cnxs(),
-                           get_dim(self.crds_b, 0, minimum=True), get_dim(
-                               self.crds_b, 0),
-                           get_dim(self.crds_b, 1, minimum=True), get_dim(self.crds_b, 1))
-
-    def check(self):
-        # I continue the function despite invalid data so that I can see all the issues
-        valid = True
-        if not self.check_nets():
-            print("Inconsistent nets")
-            valid = False
-        else:
-            print("Nets valid!")
-        if not self.check_num_nodes():
-            print("Inconsistent number of nodes")
-            valid = False
-        else:
-            print("Number of nodes valid!")
-        if not self.check_dims():
-            print("Erroneous dimensions")
-            valid = False
-        else:
-            print("Dimensions valid!")
-        return valid
-
-    def check_num_nodes(self):
-        print("Checking number of nodes...")
-        valid = True
-        if self.aux_a.num_nodes != len(self.crds_a):
-            print("Inconsistent number of nodes in aux_a and crds_a")
-            valid = False
-        if self.aux_b.num_nodes != len(self.crds_b):
-            print("Inconsistent number of nodes in aux_b and crds_b")
-            valid = False
-        return valid
-
-    def check_dims(self):
-        print("Checking dimensions...")
-        valid = True
-        if not compare_aux_dim_crd_dim(self.aux_a.xlo, get_dim(self.crds_a, 0, minimum=True), NetworkType.A, "xlo"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_a.xhi, get_dim(self.crds_a, 0), NetworkType.A, "xhi"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_a.ylo, get_dim(self.crds_a, 1, minimum=True), NetworkType.A, "ylo"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_a.yhi, get_dim(self.crds_a, 1), NetworkType.A, "yhi"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_b.xlo, get_dim(self.crds_b, 0, minimum=True), NetworkType.B, "xlo"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_b.xhi, get_dim(self.crds_b, 0), NetworkType.B, "xhi"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_b.ylo, get_dim(self.crds_b, 1, minimum=True), NetworkType.B, "ylo"):
-            valid = False
-        if not compare_aux_dim_crd_dim(self.aux_b.yhi, get_dim(self.crds_b, 1), NetworkType.B, "yhi"):
-            valid = False
-        return valid
-
-    def check_nets(self):
-        valid = True
-        print("Checking nets...")
-        if not check_nets(self.net_a, self.net_a):
-            print("A-A connections invalid")
-            valid = False
-        print("A-A connections valid")
-        if not check_nets(self.net_b, self.net_b):
-            print("B-B connections invalid")
-            valid = False
-        print("B-B connections valid")
-        if not check_nets(self.dual_a, self.dual_b):
-            print("A-B dual connections valid")
-            valid = False
-        print("A-B dual connections valid")
-        if not check_nets(self.dual_b, self.dual_a):
-            print("B-A dual connections valid")
-            valid = False
-        print("B-A dual connections valid")
-        if not valid:
-            raise ValueError("Nets not valid")
-        else:
-            return valid
+    base_network: NetMCNetwork
+    ring_network: NetMCNetwork
 
     @staticmethod
-    def import_data(path: Path, prefix: str = "default") -> NetMCData:
-        aux_a = NetMCAux.from_file(path.joinpath(f"{prefix}_A_aux.dat"))
-        aux_b = NetMCAux.from_file(path.joinpath(f"{prefix}_B_aux.dat"))
-        crds_a = np.genfromtxt(path.joinpath(f"{prefix}_A_crds.dat"))
-        crds_b = np.genfromtxt(path.joinpath(f"{prefix}_B_crds.dat"))
-        net_a = NetMCNets.from_file(path.joinpath(f"{prefix}_A_net.dat"))
-        net_b = NetMCNets.from_file(path.joinpath(f"{prefix}_B_net.dat"))
-        dual_a = NetMCNets.from_file(path.joinpath(f"{prefix}_A_dual.dat"))
-        dual_b = NetMCNets.from_file(path.joinpath(f"{prefix}_B_dual.dat"))
-        return NetMCData(aux_a, aux_b, crds_a, crds_b, net_a, net_b, dual_a, dual_b)
+    def from_files(path: Path, prefix: str):
+        base_nodes = get_nodes(path.joinpath(f"{prefix}_A_crds.dat"), "base")
+        ring_nodes = get_nodes(path.joinpath(f"{prefix}_B_crds.dat"), "ring")
+        fill_neighbours(path.joinpath(f"{prefix}_A_net.dat"), base_nodes, base_nodes)
+        fill_neighbours(path.joinpath(f"{prefix}_B_net.dat"), ring_nodes, ring_nodes)
+        fill_neighbours(path.joinpath(f"{prefix}_A_dual.dat"), base_nodes, ring_nodes)
+        fill_neighbours(path.joinpath(f"{prefix}_B_dual.dat"), ring_nodes, base_nodes)
+        base_geom_code = get_geom_code(path.joinpath(f"{prefix}_A_aux.dat"))
+        ring_geom_code = get_geom_code(path.joinpath(f"{prefix}_B_aux.dat"))
+        base_network = NetMCNetwork(base_nodes, "base", base_geom_code)
+        ring_network = NetMCNetwork(ring_nodes, "ring", ring_geom_code)
+        return NetMCData(base_network, ring_network)
 
-    def export_all(self, output_path: Path, prefix: str = "default"):
-        self.aux_a.export(output_path, prefix)
-        self.aux_b.export(output_path, prefix)
-        np.savetxt(output_path.joinpath(
-            f"{prefix}_A_crds.dat"), self.crds_a, fmt="%-19.6f")
-        np.savetxt(output_path.joinpath(
-            f"{prefix}_B_crds.dat"), self.crds_b, fmt="%-19.6f")
-        self.net_a.export(output_path, prefix)
-        self.net_b.export(output_path, prefix)
-        self.dual_a.export(output_path, prefix)
-        self.dual_b.export(output_path, prefix)
+    def export(self, path: Path, prefix: str) -> None:
+        self.base_network.export(path, prefix)
+        self.ring_network.export(path, prefix)
 
-    def get_graph(self, network_type: NetworkType) -> nx.graph:
-        if network_type == NetworkType.A:
-            return get_graph(self.crds_a, self.net_a)
-        elif network_type == NetworkType.B:
-            return get_graph(self.crds_b, self.net_b)
-        raise ValueError("Invalid network type")
+    def check(self) -> None:
+        self.base_network.check()
+        self.ring_network.check()
 
-    def get_dimensions(self, network_type: NetworkType) -> np.ndarray:
-        if network_type == NetworkType.A:
-            return np.array([[self.aux_a.xlo, self.aux_a.xhi], [self.aux_a.ylo, self.aux_a.yhi]])
-        elif network_type == NetworkType.B:
-            return np.array([[self.aux_b.xlo, self.aux_b.xhi], [self.aux_b.ylo, self.aux_b.yhi]])
-        raise ValueError("Invalid network type")
+    def __eq__(self, other) -> bool:
+        if isinstance(other, NetMCData):
+            return (self.base_network == other.base_network and
+                    self.ring_network == other.ring_network)
+        return False
 
+    def zero_coords(self) -> None:
+        translation_vector = -self.dimensions[:, 0]
+        self.base_network.translate(translation_vector)
+        self.ring_network.translate(translation_vector)
 
-@dataclass
-class NetMCNets:
-    network_type: NetworkType
-    connected_to: NetworkType
-    nets: list[np.ndarray] = field(default_factory=lambda: [])
+    def centre_coords(self) -> None:
+        translation_vector = -np.mean(self.dimensions, axis=1)
+        self.base_network.translate(translation_vector)
+        self.ring_network.translate(translation_vector)
 
-    def __post_init__(self) -> None:
-        self.num_nodes = len(self.nets)
+    def delete_node(self, node: NetMCNode) -> None:
+        for neighbour in node.neighbours:
+            neighbour.delete_neighbour(node)
+        for ring_neighbour in node.ring_neighbours:
+            ring_neighbour.delete_ring_neighbour(node)
+        self.base_network.delete_node(node)
+        self.ring_network.delete_node(node)
 
-    def add_net(self, net: np.ndarray) -> None:
-        self.nets.append(net)
-        self.num_nodes += 1
-
-    def delete_node(self, deleted_node: int | np.int64, deleted_node_network: NetworkType):
-        if NetworkType(deleted_node_network) == self.network_type:
-            del self.nets[deleted_node]
-        if NetworkType(deleted_node_network) == self.connected_to:
-            for i, net in enumerate(self.nets):
-                temp = self.nets[i]
-                if deleted_node in net:
-                    temp = np_delete_element(temp, deleted_node)
-                self.nets[i] = shift_nodes(temp, deleted_node)
-
-    @staticmethod
-    def from_file(path: Path, skip_header: int = 0) -> NetMCNets:
-        with open(path, "r") as net_file:
-            nets = [np.array(line.strip().split(), dtype=np.int64)
-                    for line in net_file]
-        if path.name[-7:-4] == "net":
-            network_type = NetworkType(path.name[-9])
-            if network_type == NetworkType.A:
-                connected_to = NetworkType.A
-            else:
-                connected_to = NetworkType.B
-        elif path.name[-8:-4] == "dual":
-            network_type = NetworkType(path.name[-10])
-            if network_type == NetworkType.A:
-                connected_to = NetworkType.B
-            else:
-                connected_to = NetworkType.A
+    def add_node(self, node: NetMCNode) -> None:
+        if node.type == "base":
+            self.base_network.add_node(node)
         else:
-            raise ValueError("file name does not contain 'net' or 'dual', so cannot identify"
-                             "what the nodes are connected to")
-        return NetMCNets(network_type=network_type, connected_to=connected_to, nets=nets)
+            self.ring_network.add_node(node)
+        for neighbour in node.neighbours:
+            neighbour.add_neighbour(node)
+        for ring_neighbour in node.ring_neighbours:
+            ring_neighbour.add_ring_neighbour(node)
 
-    @staticmethod
-    def from_array(array: list[np.ndarray], network_type: NetworkType, connected_to: NetworkType):
-        return NetMCNets(network_type, connected_to, array)
+    def merge_nodes(self, nodes_to_merge: list[NetMCNode]) -> None:
+        node_types = [node_to_merge.type for node_to_merge in nodes_to_merge]
+        if len(set(node_types)) != 1:
+            raise ValueError(f"Cannot merge nodes {nodes_to_merge} because they have different types")
+        target_network = self.base_network if node_types[0] == "base" else self.ring_network
 
-    def export(self, output_path: Path = Path.cwd(), prefix: str = "default") -> None:
-        with open(output_path.joinpath(f"{prefix}_{self.network_type.value}_{CONNECTED_MAP[self.network_type][self.connected_to]}.dat"), "w") as net_file:
-            for net in self.nets:
-                for connected_node in net:
-                    net_file.write(f"{connected_node:<20}")
-                net_file.write("\n")
+        # I have to use settify instead of set() because the nodes are not hashable
+        all_neighbours = settify([neighbour for node_to_merge in nodes_to_merge for neighbour in node_to_merge.neighbours if neighbour not in nodes_to_merge])
+        all_ring_neighbours = settify([neighbour for node_to_merge in nodes_to_merge for neighbour in node_to_merge.ring_neighbours])
+        new_coord = np.mean([ring_neighbour.coord for ring_neighbour in all_ring_neighbours], axis=0)
+        new_node = NetMCNode(new_coord, target_network.num_nodes, node_types[0], all_neighbours, all_ring_neighbours)
+        target_network.add_node(new_node)
+        for node in all_neighbours:
+            node.add_neighbour(new_node)
+        for node in all_ring_neighbours:
+            node.add_ring_neighbour(new_node)
+        for node_to_merge in nodes_to_merge:
+            self.delete_node(node_to_merge)
 
-    def shift_export(self, output_path: Path = Path.cwd(), deleted_nodes: np.ndarray = np.array([]),
-                     prefix: str = "default",) -> None:
-        with open(output_path.joinpath(f"{prefix}_{self.network_type.value}_{CONNECTED_MAP[self.network_type][self.connected_to]}.dat"), 'w') as net_file:
-            for net in self.nets:
-                for connected_node in net:
-                    for deleted_node in deleted_nodes:
-                        if connected_node >= deleted_node:
-                            connected_node -= 1
-                    if connected_node < 0:
-                        print("Error in atom repositioning")
-                    elif connected_node > self.num_nodes:
-                        print("Including illegal connections")
-                    net_file.write(f"{connected_node:<10}")
-                net_file.write("\n")
+    def add_bond(self, node_1: NetMCNode, node_2: NetMCNode) -> None:
+        if node_1.type == "base" and node_1 not in self.base_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the base network")
+        if node_2.type == "base" and node_2 not in self.base_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_2.id} is not in the base network")
+        if node_1.type == "ring" and node_1 not in self.ring_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the ring network")
+        if node_2.type == "ring" and node_2 not in self.ring_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_2.id} is not in the ring network")
+        node_1.add_neighbour(node_2)
+        node_2.add_neighbour(node_1)
 
-    def get_max_cnxs(self):
-        return max([net.shape[0] for net in self.nets])
+    def split_ring(self, node_1: NetMCNode, node_2: NetMCNode) -> None:
+        if (node_1 or node_2) not in self.base_network.nodes:
+            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because one or both nodes are not in the base network")
+        if node_1.type != "base" or node_2.type != "base":
+            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because one or both nodes are not base nodes")
+        common_rings = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])
+        if len(common_rings) != 1:
+            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because they do not share a ring")
+        common_ring = common_rings[0]
+        self.add_bond(node_1, node_2)
+        ring_walk = common_ring.get_ring_walk()
+        index_1 = ring_walk.index(node_1)
+        index_2 = ring_walk.index(node_2)
+        if index_1 < index_2:
+            new_ring_node_1_ring_nodes = ring_walk[index_1:index_2 + 1]
+            new_ring_node_2_ring_nodes = ring_walk[index_2:] + ring_walk[:index_1 + 1]
+        else:
+            new_ring_node_1_ring_nodes = ring_walk[index_2:index_1 + 1]
+            new_ring_node_2_ring_nodes = ring_walk[index_1:] + ring_walk[:index_2 + 1]
+        new_ring_node_1_nodes = []
+        for ring_node in new_ring_node_1_ring_nodes:
+            for neighbour in ring_node.ring_neighbours:
+                if neighbour not in new_ring_node_1_nodes:
+                    new_ring_node_1_nodes.append(neighbour)
+        new_ring_node_2_nodes = []
+        for ring_node in new_ring_node_2_ring_nodes:
+            for neighbour in ring_node.ring_neighbours:
+                if neighbour not in new_ring_node_2_nodes:
+                    new_ring_node_2_nodes.append(neighbour)
+        new_ring_node_1 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_1_ring_nodes], axis=0),
+                                    self.ring_network.num_nodes, "ring", new_ring_node_1_nodes, new_ring_node_1_ring_nodes)
+        self.add_node(new_ring_node_1)
+        new_ring_node_2 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_2_ring_nodes], axis=0),
+                                    self.ring_network.num_nodes, "ring", new_ring_node_2_nodes, new_ring_node_2_ring_nodes)
+        self.add_node(new_ring_node_2)
+        self.add_bond(new_ring_node_1, new_ring_node_2)
+        self.delete_node(common_ring)
 
-    def get_graph(self) -> nx.graph:
-        graph = nx.graph()
-        for selected_node, net in enumerate(self.nets):
-            graph.add_node(selected_node)
-            for bonded_node in net:
-                graph.add_edge(selected_node, bonded_node)
+    @property
+    def graph(self) -> nx.Graph:
+        # Assumes base-ring connections are the same as ring-base connections
+        graph = nx.Graph()
+        for node in self.base_network.nodes:
+            graph.add_node(node.id, pos=(node.x, node.y), source='base_network')
+        for bond in self.base_network.bonds:
+            if bond.length < 2 * self.base_network.avg_bond_length:
+                graph.add_edge(bond.node_1.id, bond.node_2.id, source='base_network')
+        for bond in self.base_network.ring_bonds:
+            if bond.length < 2 * self.base_network.avg_ring_bond_length:
+                graph.add_edge(bond.node_1.id, self.base_network.num_nodes + bond.node_2.id, source='base_ring_bonds')
+        for node in self.ring_network.nodes:
+            graph.add_node(self.base_network.num_nodes + node.id, pos=(node.x, node.y), source='ring_network')
+        for bond in self.ring_network.bonds:
+            if bond.length < 2 * self.ring_network.avg_bond_length:
+                graph.add_edge(self.base_network.num_nodes + bond.node_1.id, self.base_network.num_nodes + bond.node_2.id, source='ring_network')
         return graph
 
+    def draw_graph(self) -> None:
+        node_colors = ['red' if data['source'] == 'base_network' else 'blue' for _, data in self.graph.nodes(data=True)]
+        edge_colors = []
+        for _, _, data in self.graph.edges(data=True):
+            if data['source'] == 'base_network':
+                edge_colors.append('black')
+            elif data['source'] == 'ring_network':
+                edge_colors.append('green')
+            else:
+                edge_colors.append('blue')
+        node_sizes = [30 if data['source'] == 'base_network' else 10 for _, data in self.graph.nodes(data=True)]
+        edge_widths = [2 if data['source'] == 'base_network' else 1 for _, _, data in self.graph.edges(data=True)]
+        pos = nx.get_node_attributes(self.graph, "pos")
+        nx.draw(self.graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+
+    @property
+    def dimensions(self) -> np.ndarray:
+        return np.array([[self.xlo, self.xhi], [self.ylo, self.yhi]])
+
+    @property
+    def xlo(self) -> float:
+        return min(self.base_network.xlo, self.ring_network.xlo)
+
+    @property
+    def xhi(self) -> float:
+        return max(self.base_network.xhi, self.ring_network.xhi)
+
+    @property
+    def ylo(self) -> float:
+        return min(self.base_network.ylo, self.ring_network.ylo)
+
+    @property
+    def yhi(self) -> float:
+        return max(self.base_network.yhi, self.ring_network.yhi)
+
 
 @dataclass
-class NetMCAux:
-    num_nodes: int | np.int64
-    max_cnxs: int | np.int64
-    max_cnxs_dual: int | np.int64
-    geom_code: str
-    xlo: float | np.float64
-    xhi: float | np.float64
-    ylo: float | np.float64
-    yhi: float | np.float64
-    network_type: NetworkType
-    prefix: str
+class NetMCNetwork:
+    nodes: list[NetMCNode] = field(default_factory=lambda: [])
+    type: str = "base"
+    geom_code: str = "2DE"
 
-    def export(self, path: Path = Path.cwd(), prefix: str = "default") -> None:
-        with open(path.joinpath(f"{prefix}_{self.network_type.value}_aux.dat"), "w") as aux_file:
+    def __post_init__(self):
+        self.avg_bond_length = np.mean([bond.length for bond in self.bonds])
+        self.avg_ring_bond_length = np.mean([bond.length for bond in self.ring_bonds])
+
+    def delete_node(self, node: NetMCNode) -> None:
+        if node.type == self.type:
+            self.nodes.remove(node)
+            for i, node in enumerate(self.nodes):
+                node.id = i
+
+    # in a separate method because this is a time-consuming operation
+    def get_avg_bond_length(self) -> float:
+        return np.mean([bond.length for bond in self.bonds])
+
+    def get_avg_ring_bond_length(self) -> float:
+        return np.mean([bond.length for bond in self.ring_bonds])
+
+    def check(self) -> None:
+        if self.type not in ("base", "ring"):
+            raise ValueError(f"Network has invalid type {self.type}")
+        for node in self.nodes:
+            node.check()
+        for bond in self.bonds:
+            bond.check()
+        for ring_bond in self.ring_bonds:
+            ring_bond.check()
+
+    def translate(self, vector: np.ndarray) -> None:
+        for node in self.nodes:
+            node.translate(vector)
+
+    def get_nearest_node(self, point: np.array) -> tuple(NetMCNode, float):
+        distance, index = self.kdtree.query(point)
+        return self.nodes[index], distance
+
+    def add_node(self, node) -> None:
+        self.nodes.append(node)
+
+    @property
+    def kdtree(self):
+        return KDTree(np.array([[node.x, node.y] for node in self.nodes]))
+
+    @property
+    def bonds(self) -> list[NetMCBond]:
+        bonds = []
+        for node in self.nodes:
+            for neighbour in node.neighbours:
+                bonds.append(NetMCBond(node, neighbour))
+        return bonds
+
+    @property
+    def ring_bonds(self) -> list[NetMCBond]:
+        bonds = []
+        for node in self.nodes:
+            for neighbour in node.ring_neighbours:
+                bonds.append(NetMCBond(node, neighbour))
+        return bonds
+
+    @property
+    def graph(self) -> nx.Graph:
+        graph = nx.Graph()
+        for node in self.nodes:
+            graph.add_node(node.id, pos=(node.x, node.y))
+        for bond in self.bonds:
+            if bond.length < 2 * self.avg_bond_length:
+                graph.add_edge(bond.node_1.id, bond.node_2.id)
+        return graph
+
+    def export(self, path: Path, prefix: str) -> None:
+        self.export_aux(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_aux.dat"))
+        self.export_coords(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_crds.dat"))
+        self.export_base_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_net.dat"))
+        self.export_ring_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_dual.dat"))
+
+    def export_aux(self, path: Path) -> None:
+        with open(path, "w") as aux_file:
             aux_file.write(f"{self.num_nodes}\n")
-            aux_file.write(f"{self.max_cnxs:<10}{self.max_cnxs_dual:<10}\n")
+            aux_file.write(f"{self.max_connections:<10}{self.max_ring_connections:<10}\n")
             aux_file.write(f"{self.geom_code}\n")
-            aux_file.write(f"{self.xlo:<20.6f}{self.xhi:<20.6f}\n")
-            aux_file.write(f"{self.ylo:<20.6f}{self.yhi:<20.6f}\n")
+            aux_file.write(f"{self.xhi:<20.6f}{self.yhi:<20.6f}\n")
+            aux_file.write(f"{self.xlo:<20.6f}{self.ylo:<20.6f}\n")
 
-    def delete_node(self, deleted_node_network):
-        if deleted_node_network == self.network_type:
-            self.num_nodes -= 1
+    def export_coords(self, path: Path) -> None:
+        coords = np.array([[node.x, node.y] for node in self.nodes])
+        np.savetxt(path, coords, fmt="%-19.6f")
 
-    @staticmethod
-    def from_file(path: Path):
-        with open(path, "r") as aux_file:
-            num_nodes = int(aux_file.readline().strip())
-            cnxs = aux_file.readline().strip().split()
-            max_cnxs, max_cnxs_dual = int(cnxs[0]), int(cnxs[1])
-            geom_code = aux_file.readline().strip()
-        dims = np.genfromtxt(path, skip_header=3, dtype=np.float64)
-        # This is the correct format for the aux dimensions!!
-        #           xhi         yhi
-        #           xlo         ylo
-        xhi, yhi, xlo, ylo = dims[0][0], dims[0][1], dims[1][0], dims[1][1]
-        network_type = NetworkType(path.name[-9])
-        prefix = path.name[:11]
-        return NetMCAux(num_nodes=num_nodes, max_cnxs=max_cnxs,
-                        max_cnxs_dual=max_cnxs_dual,
-                        geom_code=geom_code,
-                        xlo=xlo, xhi=xhi, ylo=ylo, yhi=yhi,
-                        network_type=network_type, prefix=prefix)
+    def export_bonds(self, path: Path, neighbour_attribute: str) -> None:
+        with open(path, "w") as file:
+            for node in self.nodes:
+                for neighbour in getattr(node, neighbour_attribute):
+                    file.write(f"{neighbour.id:<10}")
+                file.write("\n")
 
-    def refresh(self, num_nodes: int | np.int64, max_cnxs_a: int | np.int64,
-                max_cnxs_b: int | np.int64, xlo: float | np.float64,
-                xhi: float | np.float64, ylo: float | np.float64,
-                yhi: float | np.float64) -> None:
-        self.num_nodes = num_nodes
-        self.max_cnxs_a = max_cnxs_a
-        self.max_cnxs_b = max_cnxs_b
-        self.xlo = xlo
-        self.xhi = xhi
-        self.ylo = ylo
-        self.yhi = yhi
+    def export_base_bonds(self, path: Path) -> None:
+        self.export_bonds(path, "neighbours")
+
+    def export_ring_bonds(self, path: Path) -> None:
+        self.export_bonds(path, "ring_neighbours")
+
+    @property
+    def num_nodes(self):
+        return len(self.nodes)
+
+    @property
+    def num_bonds(self):
+        return len(self.bonds)
+
+    @property
+    def num_ring_bonds(self):
+        return len(self.ring_bonds)
+
+    @property
+    def dimensions(self):
+        return np.array([[self.xlo, self.xhi], [self.ylo, self.yhi]])
+
+    @property
+    def max_connections(self):
+        return max([node.num_neighbours for node in self.nodes])
+
+    @property
+    def max_ring_connections(self):
+        return max([node.num_ring_neighbours for node in self.nodes])
+
+    @property
+    def xlo(self):
+        return min([node.x for node in self.nodes])
+
+    @property
+    def xhi(self):
+        return max([node.x for node in self.nodes])
+
+    @property
+    def ylo(self):
+        return min([node.y for node in self.nodes])
+
+    @property
+    def yhi(self):
+        return max([node.y for node in self.nodes])
+
+    def __eq__(self, other):
+        if isinstance(other, NetMCNetwork):
+            return (self.nodes == other.nodes and
+                    self.type == other.type and
+                    self.geom_code == other.geom_code)
+        return False
+
+
+@dataclass
+class NetMCNode:
+    coord: np.array
+    id: int
+    type: str
+    neighbours: list[NetMCNode] = field(default_factory=lambda: [])
+    ring_neighbours: list[NetMCNode] = field(default_factory=lambda: [])
+
+    def check(self) -> None:
+        if self.type not in ("base", "ring"):
+            raise ValueError(f"Node {self.id} has invalid type {self.type}")
+        for neighbour in self.neighbours:
+            if neighbour == self:
+                raise ValueError(f"Node {self.id} has itself as neighbour")
+            if self not in neighbour.neighbours:
+                raise ValueError(f"Node {self.id} has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
+            if self.type != neighbour.type:
+                raise ValueError(f"Node {self.id} has neighbour {neighbour.id}, but neighbour has different type")
+        for ring_neighbour in self.ring_neighbours:
+            if self not in ring_neighbour.ring_neighbours:
+                raise ValueError(f"Node {self.id} has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
+            if self.type == ring_neighbour.type:
+                raise ValueError(f"Node {self.id} has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
+
+    def get_ring_walk(self) -> list[NetMCNode]:
+        """
+        Returns a list of nodes such that the order is how they are connected in the ring.
+        """
+        walk = [self.ring_neighbours[0]]
+        while len(walk) < len(self.ring_neighbours):
+            current_node = walk[-1]
+            for neighbour in current_node.neighbours:
+                if neighbour in self.ring_neighbours and neighbour not in walk:
+                    walk.append(neighbour)
+                    break
+        return walk
+
+    def add_neighbour(self, neighbour: 'NetMCNode') -> None:
+        self.neighbours.append(neighbour)
+
+    def delete_neighbour(self, neighbour: 'NetMCNode') -> None:
+        self.neighbours.remove(neighbour)
+
+    def add_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
+        self.ring_neighbours.append(neighbour)
+
+    def delete_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
+        self.ring_neighbours.remove(neighbour)
+
+    def translate(self, vector: np.array) -> None:
+        self.coord += vector
+
+    @property
+    def num_neighbours(self) -> int:
+        return len(self.neighbours)
+
+    @property
+    def num_ring_neighbours(self) -> int:
+        return len(self.ring_neighbours)
+
+    @property
+    def x(self) -> float:
+        return self.coord[0]
+
+    @property
+    def y(self) -> float:
+        return self.coord[1]
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, NetMCNode):
+            return (self.id == other.id and
+                    self.type == other.type and
+                    np.array_equal(self.coord, other.coord) and
+                    self.neighbours == other.neighbours and
+                    self.ring_neighbours == other.ring_neighbours)
+        return False
+
+    def __repr__(self) -> str:
+        return f"Node {self.id} ({self.type}) at {self.coord}. neighbours: {[neighbour.id for neighbour in self.neighbours]}." \
+            f"ring neighbours: {[ring_neighbour.id for ring_neighbour in self.ring_neighbours]}"
+
+
+@dataclass
+class NetMCBond:
+    node_1: NetMCNode
+    node_2: NetMCNode
+
+    @property
+    def length(self):
+        return np.linalg.norm(self.node_1.coord - self.node_2.coord)
+
+    @property
+    def type(self):
+        return f"{self.node_1.type}-{self.node_2.type}"
+
+    def check(self) -> None:
+        if self.node_1 == self.node_2:
+            raise ValueError(f"Bond {self} has same node as both nodes")
+
+    def __eq__(self, other):
+        if isinstance(other, NetMCBond):
+            return ((self.node_1 == other.node_1 and self.node_2 == other.node_2) or
+                    (self.node_1 == other.node_2 and self.node_2 == other.node_1))
+        return False
