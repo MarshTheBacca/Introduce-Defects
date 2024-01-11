@@ -9,7 +9,7 @@ from typing import IO, Optional
 import numpy as np
 from scipy.spatial import KDTree
 
-from .netmc_data import NetMCData, NetworkType
+from .netmc_data import NetMCNetwork
 
 LAMMPS_DEFAULT_DESCRIPTION = "Written by lammps_data.py made by Marshall Hunt"
 
@@ -227,38 +227,30 @@ class LAMMPSData:
         return np.array(dims)
 
     @staticmethod
-    def from_netmc_data(netmc_data: NetMCData, network_type: NetworkType,
-                        atom_label: str, atomic_mass: Optional[float] = None,
+    def from_netmc_data(netmc_network: NetMCNetwork, atom_label: str, atomic_mass: Optional[float] = None,
                         dimensions: Optional[np.ndarray] = None, atom_style: str = "atomic") -> LAMMPSData:
         # NetMC data contains only one atom type, which is not knowable from the files
         # We can also not deduce the desired dimensions, atomic masses or bond/angle types
-        if network_type == NetworkType.A:
-            crds = netmc_data.crds_a
-            nets = netmc_data.net_a.nets
-        elif network_type == NetworkType.B:
-            crds = netmc_data.crds_b
-            nets = netmc_data.net_b.nets
-        else:
-            raise ValueError(f"Network type {network_type} is not supported.")
         if dimensions is None:
-            dimensions = get_dims(crds, tolerance=0.5)
+            dimensions = np.array([netmc_network.xlo, netmc_network.xhi], [netmc_network.ylo, netmc_network.yhi])
         data = LAMMPSData(atoms=[], bonds=[], angles=[], dimensions=dimensions)
         if atomic_mass is not None:
             data.add_mass(atom_label, atomic_mass)
-        for i, coord in enumerate(crds):
+        for i, node in enumerate(netmc_network.nodes):
             if atom_style == "atomic":
-                data.add_atom(LAMMPSAtom(coord=coord, label=atom_label))
+                data.add_atom(LAMMPSAtom(coord=node.coord, label=atom_label))
             elif atom_style == "molecular":
                 # Since we cannot deduce what molecule an atom belongs to from NetMC data, we set molecule_id to be the same as id
-                data.add_atom(LAMMPSMolecule(coord=coord, label=atom_label, molecule_id=i + 1))
+                data.add_atom(LAMMPSMolecule(coord=node.coord, label=atom_label, molecule_id=i + 1))
         data.atoms = sorted(data.atoms, key=lambda atom: atom.id)
-        for i, net in enumerate(nets):
-            for bonded_node in net:
-                data.add_structure(LAMMPSBond(atoms=[data.atoms[i], data.atoms[bonded_node]],
+        for node in netmc_network.nodes:
+            for neighbour in node.neighbours:
+                data.add_structure(LAMMPSBond(atoms=[data.atoms[node.id], data.atoms[neighbour.id]],
                                               label=f"{atom_label}-{atom_label}"))
-            for angle in get_angles(i, net):
+            for angle in get_angles(node.id, [neighbour.id for neighbour in node.neighbours]):
                 data.add_structure(LAMMPSAngle(atoms=[data.atoms[angle[0]], data.atoms[angle[1]], data.atoms[angle[2]]],
                                                label=f"{atom_label}-{atom_label}-{atom_label}"))
+
         return data
 
     def add_atom(self, atom: LAMMPSAtom, expand_dims=True) -> None:
