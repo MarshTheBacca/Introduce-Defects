@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional, Iterator
 
 import networkx as nx
 import numpy as np
@@ -10,18 +12,57 @@ from scipy.spatial import KDTree
 NETWORK_TYPE_MAP = {"base": "A", "ring": "B"}
 
 
-def shift_nodes(array: np.ndarray, deleted_node: int) -> np.ndarray:
-    for i, node in enumerate(array):
-        if node > deleted_node:
-            array[i] -= 1
-    return array
+class InvalidNetworkException(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
+class InvalidUndercoordinatedNodesException(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
+class CouldNotBondUndercoordinatedNodesException(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
+def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarray) -> float:
+    """
+    Returns the angle between three points in degrees.
+    """
+    vector1 = np.array(coord_1) - np.array(coord_2)
+    vector2 = np.array(coord_3) - np.array(coord_2)
+    dot_product = np.dot(vector1, vector2)
+    magnitude1 = np.linalg.norm(vector1)
+    magnitude2 = np.linalg.norm(vector2)
+    angle = np.arccos(dot_product / (magnitude1 * magnitude2))
+    angle = np.degrees(angle)
+    # Return the acute angle
+    return min(angle, 180 - angle)
+
+
+def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
+    """
+    Calculate the vector difference between two vectors, taking into account periodic boundary conditions.
+    """
+    if len(vector1) != len(vector2) or len(vector1) != len(dimensions):
+        raise ValueError("Vectors must have the same number of dimensions.")
+    difference_vector = np.subtract(vector2, vector1)
+    dimension_ranges = dimensions[:, 1] - dimensions[:, 0]
+    half_dimension_ranges = dimension_ranges / 2
+    difference_vector = (difference_vector + half_dimension_ranges) % dimension_ranges - half_dimension_ranges
+    return difference_vector
 
 
 def get_nodes(path: Path, network_type: str) -> list[NetMCNode]:
     if network_type not in ("base", "ring"):
         raise ValueError("Invalid network type {network_type}")
     coords = np.genfromtxt(path)
-    nodes = [NetMCNode(coord, id, network_type) for id, coord in enumerate(coords)]
+    nodes = [NetMCNode(coord=coord, neighbours=[], ring_neighbours=[], id=id, type=network_type) for id, coord in enumerate(coords)]
     return nodes
 
 
@@ -64,6 +105,27 @@ def find_common_elements(lists: list[list]) -> list:
 class NetMCData:
     base_network: NetMCNetwork
     ring_network: NetMCNetwork
+
+    def __post_init__(self) -> None:
+        self.refresh_dimensions()
+
+    def refresh_dimensions(self) -> None:
+        self._ = np.array([[self.xlo, self.xhi], [self.ylo, self.yhi]])
+        self.dimensions = self._.copy()
+
+    def __deepcopy__(self, memo) -> NetMCData:
+        copied_base_nodes_dict = {id(node): NetMCNode(coord=node.coord, id=node.id, type=node.type) for node in self.base_network.nodes}
+        copied_ring_nodes_dict = {id(node): NetMCNode(coord=node.coord, id=node.id, type=node.type) for node in self.ring_network.nodes}
+        for node in self.base_network.nodes:
+            copied_node = copied_base_nodes_dict[id(node)]
+            copied_node.neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
+            copied_node.ring_neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
+        for node in self.ring_network.nodes:
+            copied_node = copied_ring_nodes_dict[id(node)]
+            copied_node.neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
+            copied_node.ring_neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
+        return NetMCData(NetMCNetwork(list(copied_base_nodes_dict.values()), "base", self.base_network.geom_code),
+                         NetMCNetwork(list(copied_ring_nodes_dict.values()), "ring", self.ring_network.geom_code))
 
     @staticmethod
     def from_files(path: Path, prefix: str):
@@ -112,33 +174,24 @@ class NetMCData:
         self.ring_network.delete_node(node)
 
     def add_node(self, node: NetMCNode) -> None:
-        if node.type == "base":
-            self.base_network.add_node(node)
-        else:
-            self.ring_network.add_node(node)
+        self.base_network.add_node(node)
+        self.ring_network.add_node(node)
         for neighbour in node.neighbours:
             neighbour.add_neighbour(node)
         for ring_neighbour in node.ring_neighbours:
             ring_neighbour.add_ring_neighbour(node)
 
-    def merge_nodes(self, nodes_to_merge: list[NetMCNode]) -> None:
-        node_types = [node_to_merge.type for node_to_merge in nodes_to_merge]
-        if len(set(node_types)) != 1:
-            raise ValueError(f"Cannot merge nodes {nodes_to_merge} because they have different types")
-        target_network = self.base_network if node_types[0] == "base" else self.ring_network
-
+    def delete_node_and_merge_rings(self, node: NetMCNode) -> None:
+        rings_to_merge = node.ring_neighbours.copy()
         # I have to use settify instead of set() because the nodes are not hashable
-        all_neighbours = settify([neighbour for node_to_merge in nodes_to_merge for neighbour in node_to_merge.neighbours if neighbour not in nodes_to_merge])
-        all_ring_neighbours = settify([neighbour for node_to_merge in nodes_to_merge for neighbour in node_to_merge.ring_neighbours])
+        all_neighbours = settify([neighbour for node_to_merge in rings_to_merge for neighbour in node_to_merge.neighbours if neighbour not in rings_to_merge])
+        all_ring_neighbours = settify([neighbour for node_to_merge in rings_to_merge for neighbour in node_to_merge.ring_neighbours])
         new_coord = np.mean([ring_neighbour.coord for ring_neighbour in all_ring_neighbours], axis=0)
-        new_node = NetMCNode(new_coord, target_network.num_nodes, node_types[0], all_neighbours, all_ring_neighbours)
-        target_network.add_node(new_node)
-        for node in all_neighbours:
-            node.add_neighbour(new_node)
-        for node in all_ring_neighbours:
-            node.add_ring_neighbour(new_node)
-        for node_to_merge in nodes_to_merge:
+        new_node = NetMCNode(new_coord, rings_to_merge[0].type, all_neighbours, all_ring_neighbours)
+        self.add_node(new_node)
+        for node_to_merge in rings_to_merge:
             self.delete_node(node_to_merge)
+        self.delete_node(node)
 
     def add_bond(self, node_1: NetMCNode, node_2: NetMCNode) -> None:
         if node_1.type == "base" and node_1 not in self.base_network.nodes:
@@ -152,25 +205,103 @@ class NetMCData:
         node_1.add_neighbour(node_2)
         node_2.add_neighbour(node_1)
 
-    def split_ring(self, node_1: NetMCNode, node_2: NetMCNode) -> None:
-        if (node_1 or node_2) not in self.base_network.nodes:
-            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because one or both nodes are not in the base network")
-        if node_1.type != "base" or node_2.type != "base":
-            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because one or both nodes are not base nodes")
-        common_rings = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])
+    def get_undrecoordinated_nodes(self, network: NetMCNetwork, target_coordination: int) -> list[NetMCNode]:
+        undercoordinated_nodes = []
+        for node in network.nodes:
+            if node.num_neighbours < target_coordination:
+                undercoordinated_nodes.append(node)
+        return undercoordinated_nodes
+
+    @staticmethod
+    def check_undercoordinated(undercoordinated_nodes: list[NetMCNode], ring_walk: list[NetMCNode]) -> None:
+        if len(undercoordinated_nodes) % 2 != 0:
+            raise InvalidUndercoordinatedNodesException("Number of undercoordinated nodes is odd, so cannot bond them.")
+        # Check there are no three consecutive undercoordinated nodes in the ring walk
+        for node_1, node_2, node_3 in zip(ring_walk, ring_walk[1:] + ring_walk[:1], ring_walk[2:] + ring_walk[:2]):
+            if node_1 in undercoordinated_nodes and node_2 in undercoordinated_nodes and node_3 in undercoordinated_nodes:
+                raise InvalidUndercoordinatedNodesException("There are three consecutive undercoordinated nodes in the ring walk.")
+        islands = []
+        for i, node in enumerate(undercoordinated_nodes):
+            next_node = undercoordinated_nodes[(i + 1) % len(undercoordinated_nodes)]
+            if next_node in node.neighbours:
+                islands.append([node, next_node])
+        for i, island in enumerate(islands):
+            font_of_island = island[1]
+            back_of_next_island = islands[(i + 1) % len(islands)][0]
+            undercoordinated_nodes_between_islands = [node for node in undercoordinated_nodes if
+                                                      ring_walk.index(font_of_island) < ring_walk.index(node) < ring_walk.index(back_of_next_island)]
+            if len(undercoordinated_nodes_between_islands) % 2 != 0:
+                raise InvalidUndercoordinatedNodesException("There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.")
+
+    @staticmethod
+    def arrange_undercoordinated(undercoordinated_nodes: list[NetMCNode]) -> tuple[list[NetMCNode], list[NetMCNode]]:
+        common_rings = find_common_elements([node.ring_neighbours for node in undercoordinated_nodes])
         if len(common_rings) != 1:
-            raise ValueError(f"Cannot split ring between nodes {node_1.id} and {node_2.id} because they do not share a ring")
+            raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
         common_ring = common_rings[0]
-        self.add_bond(node_1, node_2)
+        ring_walk = common_ring.get_ring_walk()
+        undercoordinated_nodes.sort(key=lambda node: ring_walk.index(node))
+        return undercoordinated_nodes, ring_walk
+
+    @staticmethod
+    def bond_undercoordinated_nodes(netmc_data: NetMCData) -> NetMCData:
+        potential_network_1 = copy.deepcopy(netmc_data)
+        potential_network_2 = copy.deepcopy(netmc_data)
+        potential_network_1.flip_flop(direction=1)
+        potential_network_2.flip_flop(direction=-1)
+        if potential_network_1.flopped and potential_network_2.flopped:
+            raise CouldNotBondUndercoordinatedNodesException("Could not bond undercoordinated nodes.")
+        elif potential_network_1.flopped:
+            return potential_network_2
+        elif potential_network_2.flopped:
+            return potential_network_1
+        else:
+            return NetMCData.compare_networks(potential_network_1, potential_network_2)
+
+    @staticmethod
+    def compare_networks(network_1: NetMCData, network_2: NetMCData) -> NetMCData:
+        network_1_strain = network_1.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
+        network_2_strain = network_2.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
+        print(f"Network 1 strain: {network_1_strain} Network 2 strain: {network_2_strain}")
+        if network_1_strain < network_2_strain:
+            return network_1
+        if network_1_strain == network_2_strain:
+            return network_1
+        return network_2
+
+    def flip_flop(self, direction: int) -> None:
+        self.flopped = False
+        undercoordinated_nodes = self.get_undrecoordinated_nodes(self.base_network, 3)
+        undercoordinated_nodes, ring_walk = self.arrange_undercoordinated(undercoordinated_nodes)
+        self.check_undercoordinated(undercoordinated_nodes, ring_walk)
+        if direction == -1:
+            undercoordinated_nodes = undercoordinated_nodes[-1:] + undercoordinated_nodes[:-1]
+        while len(undercoordinated_nodes) > 0:
+            selected_node = undercoordinated_nodes.pop(0)
+            next_node = undercoordinated_nodes.pop(0)
+            if next_node in selected_node.neighbours:
+                self.flopped = True
+                return
+            new_ring_1, new_ring_2, ring_to_remove = self.get_resulting_rings(selected_node, next_node)
+            self.add_bond(selected_node, next_node)
+            self.split_ring(new_ring_1, new_ring_2, ring_to_remove)
+
+    def get_resulting_rings(self, node_1: NetMCNode, node_2: NetMCNode) -> tuple[NetMCNode, NetMCNode, NetMCNode]:
+        try:
+            common_ring = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])[0]
+        except IndexError:
+            raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
         ring_walk = common_ring.get_ring_walk()
         index_1 = ring_walk.index(node_1)
         index_2 = ring_walk.index(node_2)
+        # get base network nodes
         if index_1 < index_2:
             new_ring_node_1_ring_nodes = ring_walk[index_1:index_2 + 1]
             new_ring_node_2_ring_nodes = ring_walk[index_2:] + ring_walk[:index_1 + 1]
         else:
             new_ring_node_1_ring_nodes = ring_walk[index_2:index_1 + 1]
             new_ring_node_2_ring_nodes = ring_walk[index_1:] + ring_walk[:index_2 + 1]
+        # get ring network nodes
         new_ring_node_1_nodes = []
         for ring_node in new_ring_node_1_ring_nodes:
             for neighbour in ring_node.ring_neighbours:
@@ -182,13 +313,16 @@ class NetMCData:
                 if neighbour not in new_ring_node_2_nodes:
                     new_ring_node_2_nodes.append(neighbour)
         new_ring_node_1 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_1_ring_nodes], axis=0),
-                                    self.ring_network.num_nodes, "ring", new_ring_node_1_nodes, new_ring_node_1_ring_nodes)
-        self.add_node(new_ring_node_1)
+                                    "ring", new_ring_node_1_nodes, new_ring_node_1_ring_nodes)
         new_ring_node_2 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_2_ring_nodes], axis=0),
-                                    self.ring_network.num_nodes, "ring", new_ring_node_2_nodes, new_ring_node_2_ring_nodes)
+                                    "ring", new_ring_node_2_nodes, new_ring_node_2_ring_nodes)
+        return new_ring_node_1, new_ring_node_2, common_ring
+
+    def split_ring(self, new_ring_node_1: NetMCNode, new_ring_node_2: NetMCNode, ring_to_remove: NetMCNode) -> None:
+        self.add_node(new_ring_node_1)
         self.add_node(new_ring_node_2)
+        self.delete_node(ring_to_remove)
         self.add_bond(new_ring_node_1, new_ring_node_2)
-        self.delete_node(common_ring)
 
     @property
     def graph(self) -> nx.Graph:
@@ -209,24 +343,48 @@ class NetMCData:
                 graph.add_edge(self.base_network.num_nodes + bond.node_1.id, self.base_network.num_nodes + bond.node_2.id, source='ring_network')
         return graph
 
-    def draw_graph(self) -> None:
-        node_colors = ['red' if data['source'] == 'base_network' else 'blue' for _, data in self.graph.nodes(data=True)]
+    def draw_graph(self, base_nodes: bool = True, ring_nodes: bool = False,
+                   base_bonds: bool = True, ring_bonds: bool = False, base_ring_bonds: bool = False,
+                   base_labels: bool = False, ring_labels: bool = False, offset: float = 0.2) -> None:
+        graph = nx.Graph()
+        id_shift = 0
+        if base_nodes:
+            for node in self.base_network.nodes:
+                graph.add_node(node.id, pos=(node.x, node.y), source='base_network')
+            id_shift += self.base_network.num_nodes
+        if ring_nodes:
+            for node in self.ring_network.nodes:
+                graph.add_node(node.id + id_shift, pos=(node.x, node.y), source='ring_network')
+        if base_bonds:
+            for bond in self.base_network.bonds:
+                if bond.pbc_length(self.dimensions) * 10 > bond.length:
+                    graph.add_edge(bond.node_1.id, bond.node_2.id, source='base_network')
+        if ring_bonds:
+            for bond in self.ring_network.bonds:
+                if bond.pbc_length(self.dimensions) * 10 > bond.length:
+                    graph.add_edge(bond.node_1.id + id_shift, bond.node_2.id + id_shift, source='ring_network')
+        if base_ring_bonds:
+            for bond in self.base_network.ring_bonds:
+                if bond.pbc_length(self.dimensions) * 10 > bond.length:
+                    graph.add_edge(bond.node_1.id, bond.node_2.id + id_shift, source='base_ring_bonds')
+        node_colors = ['red' if data['source'] == 'base_network' else 'blue' for _, data in graph.nodes(data=True)]
         edge_colors = []
-        for _, _, data in self.graph.edges(data=True):
+        for _, _, data in graph.edges(data=True):
             if data['source'] == 'base_network':
                 edge_colors.append('black')
             elif data['source'] == 'ring_network':
                 edge_colors.append('green')
             else:
                 edge_colors.append('blue')
-        node_sizes = [30 if data['source'] == 'base_network' else 10 for _, data in self.graph.nodes(data=True)]
-        edge_widths = [2 if data['source'] == 'base_network' else 1 for _, _, data in self.graph.edges(data=True)]
-        pos = nx.get_node_attributes(self.graph, "pos")
-        nx.draw(self.graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
-
-    @property
-    def dimensions(self) -> np.ndarray:
-        return np.array([[self.xlo, self.xhi], [self.ylo, self.yhi]])
+        node_sizes = [30 if data['source'] == 'base_network' else 10 for _, data in graph.nodes(data=True)]
+        edge_widths = [2 if data['source'] == 'base_network' else 1 for _, _, data in graph.edges(data=True)]
+        pos = nx.get_node_attributes(graph, "pos")
+        pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
+        nx.draw(graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+        if base_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={node.id: node.id for node in self.base_network.nodes}, font_size=7, font_color="gray")
+        if ring_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={node.id + id_shift: node.id for node in self.ring_network.nodes}, font_size=7, font_color="purple")
 
     @property
     def xlo(self) -> float:
@@ -253,7 +411,8 @@ class NetMCNetwork:
 
     def __post_init__(self):
         self.avg_bond_length = np.mean([bond.length for bond in self.bonds])
-        self.avg_ring_bond_length = np.mean([bond.length for bond in self.ring_bonds])
+        self._ = self.get_avg_ring_bond_length()
+        self.avg_ring_bond_length = self._.copy()
 
     def delete_node(self, node: NetMCNode) -> None:
         if node.type == self.type:
@@ -261,33 +420,42 @@ class NetMCNetwork:
             for i, node in enumerate(self.nodes):
                 node.id = i
 
+    def add_node(self, node) -> None:
+        if node.type == self.type:
+            self.nodes.append(node)
+            node.id = self.num_nodes - 1
+
     # in a separate method because this is a time-consuming operation
+
     def get_avg_bond_length(self) -> float:
-        return np.mean([bond.length for bond in self.bonds])
+        bond_lengths = [bond.length for bond in self.bonds]
+        # filter out any periodic bonds
+        threshold = 4 * np.mean(bond_lengths)
+        return np.mean([length for length in bond_lengths if length < threshold])
 
     def get_avg_ring_bond_length(self) -> float:
         return np.mean([bond.length for bond in self.ring_bonds])
 
-    def check(self) -> None:
+    def check(self) -> bool:
+        valid = True
         if self.type not in ("base", "ring"):
-            raise ValueError(f"Network has invalid type {self.type}")
+            print(f"Network has invalid type {self.type}")
+            valid = False
         for node in self.nodes:
-            node.check()
+            valid = node.check()
         for bond in self.bonds:
-            bond.check()
+            valid = bond.check()
         for ring_bond in self.ring_bonds:
-            ring_bond.check()
+            valid = ring_bond.check()
+        return valid
 
     def translate(self, vector: np.ndarray) -> None:
         for node in self.nodes:
             node.translate(vector)
 
-    def get_nearest_node(self, point: np.array) -> tuple(NetMCNode, float):
+    def get_nearest_node(self, point: np.array) -> tuple[NetMCNode, float]:
         distance, index = self.kdtree.query(point)
         return self.nodes[index], distance
-
-    def add_node(self, node) -> None:
-        self.nodes.append(node)
 
     @property
     def kdtree(self):
@@ -318,6 +486,22 @@ class NetMCNetwork:
             if bond.length < 2 * self.avg_bond_length:
                 graph.add_edge(bond.node_1.id, bond.node_2.id)
         return graph
+
+    def get_non_pbc_bonds(self, dimensions: np.ndarray) -> list[NetMCBond]:
+        return [bond for bond in self.bonds if bond.pbc_length(dimensions) * 10 > bond.length]
+
+    def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
+        for node in self.nodes:
+            for angle in node.get_angles():
+                yield angle
+
+    def evaluate_strain(self, ideal_bond_length: float, ideal_bond_angle: float) -> float:
+        bond_length_strain = np.sum([(bond.length - ideal_bond_length) ** 2 for bond in self.bonds])
+        angle_strain = 0
+        for angle in self.get_angles():
+            angle_deviation = calculate_angle(angle[0].coord, angle[1].coord, angle[2].coord) - ideal_bond_angle
+            angle_strain += angle_deviation ** 2
+        return bond_length_strain + angle_strain
 
     def export(self, path: Path, prefix: str) -> None:
         self.export_aux(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_aux.dat"))
@@ -401,39 +585,57 @@ class NetMCNetwork:
 @dataclass
 class NetMCNode:
     coord: np.array
-    id: int
     type: str
     neighbours: list[NetMCNode] = field(default_factory=lambda: [])
     ring_neighbours: list[NetMCNode] = field(default_factory=lambda: [])
+    id: Optional[int] = None
 
-    def check(self) -> None:
+    def check(self) -> bool:
+        valid = True
         if self.type not in ("base", "ring"):
-            raise ValueError(f"Node {self.id} has invalid type {self.type}")
+            print(f"Node {self.id} has invalid type {self.type}")
+            valid = False
         for neighbour in self.neighbours:
             if neighbour == self:
-                raise ValueError(f"Node {self.id} has itself as neighbour")
+                print(f"Node {self.id} ({self.type}) has itself as neighbour")
+                valid = False
             if self not in neighbour.neighbours:
-                raise ValueError(f"Node {self.id} has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
+                print(f"Node {self.id} ({self.type}) has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
+                valid = False
             if self.type != neighbour.type:
-                raise ValueError(f"Node {self.id} has neighbour {neighbour.id}, but neighbour has different type")
+                print(f"Node {self.id} ({self.type}) has neighbour {neighbour.id}, but neighbour has different type")
+                valid = False
         for ring_neighbour in self.ring_neighbours:
             if self not in ring_neighbour.ring_neighbours:
-                raise ValueError(f"Node {self.id} has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
+                print(f"Node {self.id} ({self.type}) has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
+                valid = False
             if self.type == ring_neighbour.type:
-                raise ValueError(f"Node {self.id} has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
+                print(f"Node {self.id} ({self.type}) has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
+                valid = False
+        return valid
 
     def get_ring_walk(self) -> list[NetMCNode]:
         """
         Returns a list of nodes such that the order is how they are connected in the ring.
         """
         walk = [self.ring_neighbours[0]]
+        counter = 0
         while len(walk) < len(self.ring_neighbours):
+            if counter > 999:
+                raise ValueError(f"Could not find ring walk for node {self.id} ({self.type}) ring_neighbours: {[ring_neighbour.id for ring_neighbour in self.ring_neighbours]}")
             current_node = walk[-1]
             for neighbour in current_node.neighbours:
                 if neighbour in self.ring_neighbours and neighbour not in walk:
                     walk.append(neighbour)
                     break
+            counter += 1
         return walk
+
+    def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
+        for i in range(len(self.neighbours)):
+            node_1 = self.neighbours[i]
+            node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
+            yield (node_1, self, node_2)
 
     def add_neighbour(self, neighbour: 'NetMCNode') -> None:
         self.neighbours.append(neighbour)
@@ -486,18 +688,23 @@ class NetMCBond:
     node_2: NetMCNode
 
     @property
-    def length(self):
+    def length(self) -> float:
         return np.linalg.norm(self.node_1.coord - self.node_2.coord)
 
+    def pbc_length(self, dimensions: np.ndarray) -> float:
+        return np.linalg.norm(pbc_vector(self.node_1.coord, self.node_2.coord, dimensions))
+
     @property
-    def type(self):
+    def type(self) -> str:
         return f"{self.node_1.type}-{self.node_2.type}"
 
-    def check(self) -> None:
+    def check(self) -> bool:
         if self.node_1 == self.node_2:
-            raise ValueError(f"Bond {self} has same node as both nodes")
+            print(f"Bond ({self.type} between node_1: {self.node_1.id} node_2: {self.node_2.id} bonds identical nodes")
+            return False
+        return True
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         if isinstance(other, NetMCBond):
             return ((self.node_1 == other.node_1 and self.node_2 == other.node_2) or
                     (self.node_1 == other.node_2 and self.node_2 == other.node_1))
