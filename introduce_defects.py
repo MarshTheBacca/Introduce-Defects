@@ -15,6 +15,8 @@ from utils import (CouldNotBondUndercoordinatedNodesException,
                    LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCData, NetMCNetwork,
                    NetMCNode)
 
+# Get some experimental data on energy coefficients for deviations from ideal bond lengths and angles
+
 # The comment he's included in C.data 'Atoms' line is wrong, the atoms are being stored as regular atoms, not molecules
 # since there is a missing molecule ID column.
 
@@ -233,46 +235,6 @@ def find_prefix(path):
     return potential_prefixes[0]
 
 
-def get_undercoordinated_nodes(netmc_network: NetMCNetwork) -> list[NetMCNode]:
-    undercoordinated_nodes = []
-    for node in netmc_network.nodes:
-        if node.num_neighbours == 2:
-            undercoordinated_nodes.append(node)
-        elif node.num_neighbours != 3:
-            raise ValueError(f"Node {node} has {node.num_neighbours} neighbours, expected 2 or 3.")
-    return undercoordinated_nodes
-
-
-def get_ring_to_undercoordinated_nodes_map(undercoordinated_nodes: list[NetMCNode]) -> dict[NetMCNode, list[NetMCNode]]:
-    ring_to_undercoordinated_nodes = {}
-    for node in undercoordinated_nodes:
-        for ring in node.ring_neighbours:
-            if ring not in ring_to_undercoordinated_nodes:
-                ring_to_undercoordinated_nodes[ring] = []
-            ring_to_undercoordinated_nodes[ring].append(node)
-    return ring_to_undercoordinated_nodes
-
-
-def find_common_elements(lists: list[list]) -> list:
-    first_list = lists[0]
-    common_elements = [element for element in first_list if all(element in lst for lst in lists[1:])]
-    return common_elements
-
-
-def get_ring_walk(ring: NetMCNode) -> list[NetMCNode]:
-    """
-    Returns a list of nodes such that the order is how they are connected in the ring.
-    """
-    walk = [ring.ring_neighbours[0]]
-    while len(walk) < len(ring.ring_neighbours):
-        current_node = walk[-1]
-        for neighbour in current_node.neighbours:
-            if neighbour in ring.ring_neighbours and neighbour not in walk:
-                walk.append(neighbour)
-                break
-    return walk
-
-
 def save_plot(output_path: Path, netmc_data: NetMCData, counter: int) -> None:
     plt.clf()
     plt.gca().set_aspect('equal', adjustable='box')
@@ -375,6 +337,8 @@ def main():
     cwd = Path.cwd()
     input_path = cwd.joinpath("test_input")
     output_path = cwd.joinpath("output_files")
+    input_path.mkdir(exist_ok=True)
+    output_path.mkdir(exist_ok=True)
     prefix = find_prefix(input_path)
     non_defect_netmc_data = NetMCData.from_files(input_path, prefix)
     non_defect_netmc_data.zero_coords()
