@@ -270,7 +270,11 @@ class NetMCData:
         return network_2
 
     def flip_flop(self, direction: int) -> None:
-        self.flopped = False
+        """
+        Function is called flip flop because it's used to generate the two different possible networks when bonding undercoordinated nodes.
+        The movement of every bond seems to 'flip-flop' between the two networks.
+        """
+        self.flopped = False  # Essentially means the network is invalid if True
         undercoordinated_nodes = self.get_undrecoordinated_nodes(self.base_network, 3)
         undercoordinated_nodes, ring_walk = self.arrange_undercoordinated(undercoordinated_nodes)
         self.check_undercoordinated(undercoordinated_nodes, ring_walk)
@@ -280,6 +284,7 @@ class NetMCData:
             selected_node = undercoordinated_nodes.pop(0)
             next_node = undercoordinated_nodes.pop(0)
             if next_node in selected_node.neighbours:
+                # Cannot bond undercoordinated nodes that are already bonded, this is a dead end
                 self.flopped = True
                 return
             new_ring_1, new_ring_2, ring_to_remove = self.get_resulting_rings(selected_node, next_node)
