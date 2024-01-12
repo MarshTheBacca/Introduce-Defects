@@ -4,8 +4,9 @@ import collections
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Optional
+from typing import IO, Optional, Iterator
 
+import networkx as nx
 import numpy as np
 from scipy.spatial import KDTree
 
@@ -25,18 +26,6 @@ PARAMETER_TO_VARIABLE_MAPPING = {"atoms": "num_atoms", "bonds": "num_bonds", "an
                                  "xlo xhi": "dimensions", "ylo yhi": "dimensions", "zlo zhi": "dimensions"}
 
 
-def get_angles(selected_node: int, bonded_nodes: np.ndarray) -> list[tuple[int, int, int]]:
-    """Returns a list of angles in the form (bonded_node_1, selected_node, bonded_node_2)"""
-    angles, num_bonded_nodes = [], len(bonded_nodes)
-    if num_bonded_nodes < 2:
-        return []
-    for i in range(num_bonded_nodes):
-        bonded_node_1 = bonded_nodes[i]
-        bonded_node_2 = bonded_nodes[(i + 1) % num_bonded_nodes]
-        angles.append((bonded_node_1, selected_node, bonded_node_2))
-    return angles
-
-
 def dict_to_2d_array(dictionary: dict) -> np.ndarray:
     """Converts a dictionary to a 2D array with the keys in the first column and the values in the second column."""
     return np.array([[key, value] for key, value in dictionary.items()])
@@ -51,34 +40,6 @@ def write_section(header: str, data: list[list] | np.ndarray, data_file: IO) -> 
         data_file.write("\n")
 
 
-def out_of_bounds(coords: np.ndarray, dimensions: np.ndarray) -> bool:
-    """Returns True if the coordinates are out of bounds."""
-    if len(coords) != len(dimensions):
-        raise ValueError(f"Coordinates {coords} and dimensions {dimensions} have different lengths.")
-    for coord, dimension in zip(coords, dimensions):
-        if coord < dimension[0] or coord > dimension[1]:
-            return True
-    return False
-
-
-def expand_dims(coords: np.ndarray, dimensions: np.ndarray, tolerance: float = 0.5) -> np.ndarray:
-    """Expands the dimensions to include the coordinates."""
-    if len(coords) != len(dimensions):
-        raise ValueError(f"Coordinates {coords} and dimensions {dimensions} have different lengths.")
-    for coord, dimension in zip(coords, dimensions):
-        if coord < dimension[0]:
-            dimension[0] = coord - tolerance
-        elif coord > dimension[1]:
-            dimension[1] = coord + tolerance
-    return dimensions
-
-
-def get_dims(coords: np.ndarray, tolerance: float = 0) -> np.ndarray:
-    """Returns the dimensions of the coordinates."""
-    return np.array([[min(coords[:, 0]) + tolerance, max(coords[:, 0]) + tolerance],
-                     [min(coords[:, 1]) + tolerance, max(coords[:, 1]) + tolerance]])
-
-
 @dataclass
 class LAMMPSData:
     atoms: list[LAMMPSAtom] = field(default_factory=list)
@@ -88,9 +49,6 @@ class LAMMPSData:
     masses: Optional[dict[str, float]] = None
 
     def __post_init__(self):
-        if not self.check_atoms():
-            print("Multiple atom types and mixtures of 2D and 3D coordinates are not supported")
-            raise ValueError("Atom are inconsistent.")
         self.num_atoms = len(self.atoms)
         self.num_bonds = len(self.bonds)
         self.num_angles = len(self.angles)
@@ -165,6 +123,9 @@ class LAMMPSData:
         """Returns True if all atoms have the same number of dimensions and style."""
         print("Checking atoms...")
         valid = True
+        print(self.atoms)
+        for atom in self.atoms:
+            print(atom.coord_dim, atom.style)
         most_common_coord_dim = collections.Counter(atom.coord_dim for atom in self.atoms).most_common(1)[0][0]
         most_common_style = collections.Counter(atom.style for atom in self.atoms).most_common(1)[0][0]
         for atom in self.atoms:
@@ -227,12 +188,13 @@ class LAMMPSData:
         return np.array(dims)
 
     @staticmethod
-    def from_netmc_data(netmc_network: NetMCNetwork, atom_label: str, atomic_mass: Optional[float] = None,
-                        dimensions: Optional[np.ndarray] = None, atom_style: str = "atomic") -> LAMMPSData:
+    def from_netmc_network(netmc_network: NetMCNetwork, atom_label: str, atomic_mass: Optional[float] = None,
+                           dimensions: Optional[np.ndarray] = None, atom_style: str = "atomic") -> LAMMPSData:
         # NetMC data contains only one atom type, which is not knowable from the files
         # We can also not deduce the desired dimensions, atomic masses or bond/angle types
         if dimensions is None:
-            dimensions = np.array([netmc_network.xlo, netmc_network.xhi], [netmc_network.ylo, netmc_network.yhi])
+            dimensions = np.array([[netmc_network.xlo, netmc_network.xhi],
+                                   [netmc_network.ylo, netmc_network.yhi]])
         data = LAMMPSData(atoms=[], bonds=[], angles=[], dimensions=dimensions)
         if atomic_mass is not None:
             data.add_mass(atom_label, atomic_mass)
@@ -258,7 +220,7 @@ class LAMMPSData:
             if not expand_dims:
                 raise ValueError(f"Atom {atom.id} {atom.label} is out of bounds. Use expand_dims=True to expand the dimensions.")
             else:
-                self.dimensions = expand_dims(atom.coord, self.dimensions)
+                self.dimensions = expand_dimensions(atom.coord, self.dimensions)
         if atom.label not in self.atom_labels.values():
             self.add_atom_label(atom.label)
         atom.id = self.num_atoms + 1
@@ -266,12 +228,6 @@ class LAMMPSData:
             atom.molecule_id = atom.id
         self.atoms.append(atom)
         self.num_atoms += 1
-
-    def add_structure(self, structure: LAMMPSStructure) -> None:
-        for atom in structure.atoms:
-            if atom not in self.atoms:
-                raise ValueError(f"Atom {atom.id} {atom.label} is not in the data.")
-        structure.add_to_data(self)
 
     def add_label(self, label: str, label_dict: dict, num_labels: int) -> tuple[dict, int]:
         if label_dict is None:
@@ -299,20 +255,22 @@ class LAMMPSData:
             atom.coord *= scale_factor
         self.dimensions *= scale_factor
 
-    def get_pbc_vector(self, atoms: list[LAMMPSAtom]) -> np.ndarray:
+    def get_pbc_vector(self, atom_1: LAMMPSAtom, atom_2: LAMMPSAtom) -> np.ndarray:
         """Returns the vector difference between two atoms, taking into account periodic boundary conditions."""
-        if len(atoms) != 2:
-            raise ValueError("Exactly two atoms must be passed.")
-        if len(atoms[0].coord) != len(atoms[1].coord) or len(atoms[0].coord) != len(self.dimensions):
+        if len(atom_1.coord) != len(atom_2.coord) or len(atom_1.coord) != len(self.dimensions):
             raise ValueError("Atoms must have the same number of dimensions.")
-        pbc_vector = np.subtract(atoms[1].coord, atoms[0].coord)
+        pbc_vector = np.subtract(atom_2.coord, atom_1.coord)
         dimension_ranges = self.dimensions[:, 1] - self.dimensions[:, 0]
         pbc_vector = (pbc_vector + dimension_ranges / 2) % dimension_ranges - dimension_ranges / 2
         return pbc_vector
 
-    def get_atom_connections(self, atom: LAMMPSAtom) -> list[LAMMPSAtom]:
+    def get_atom_connections(self, atom: LAMMPSAtom) -> Iterator[LAMMPSAtom]:
         """Returns a list of atoms bonded to the given atom."""
-        return [bonded_atom for bond in self.bonds for bonded_atom in bond.atoms if atom in bond.atoms and bonded_atom != atom]
+        for bond in self.bonds:
+            if bond.atoms[0] == atom:
+                yield bond.atoms[1]
+            elif bond.atoms[1] == atom:
+                yield bond.atoms[0]
 
     def export_bonds(self, path: Path) -> None:
         with open(path, 'w') as bond_file:
@@ -377,6 +335,45 @@ class LAMMPSData:
 
     def get_coords(self, atom_label: str) -> np.ndarray:
         return np.array([atom.coord for atom in self.atoms if atom.label == atom_label])
+
+    def draw_graph(self, atom_labels_to_plot: list[str], bond_labels_to_plot: list[str],
+                   atom_colours: dict, bond_colours: dict, atom_sizes: dict, bond_widths: dict,
+                   atom_labels: bool = False, bond_labels: bool = False, offset: float = 0.01) -> None:
+        for atom in atom_colours.keys():
+            if atom not in atom_labels_to_plot:
+                raise ValueError(f"Atom {atom} is not in the data.")
+        for atom in atom_sizes.keys():
+            if atom not in atom_labels_to_plot:
+                raise ValueError(f"Atom {atom} is not in the data.")
+        for bond in bond_colours.keys():
+            if bond not in bond_labels_to_plot:
+                raise ValueError(f"Bond {bond} is not in the data.")
+        for bond in bond_widths.keys():
+            if bond not in bond_labels_to_plot:
+                raise ValueError(f"Bond {bond} is not in the data.")
+
+        graph = nx.Graph()
+        for atom in atom_labels_to_plot:
+            graph.add_nodes_from([atom.id for atom in self.atoms if atom.label == atom])
+        for bond in bond_labels_to_plot:
+            graph.add_edges_from([(bond.atoms[0].id, bond.atoms[1].id) for bond in self.bonds if bond.label == bond])
+        node_colors = [atom_colours[atom.label] for atom in self.atoms]
+        edge_colors = [bond_colours[bond.label] for bond in self.bonds]
+        node_sizes = [atom_sizes[atom.label] for atom in self.atoms]
+        edge_widths = [bond_widths[bond.label] for bond in self.bonds]
+        pos = nx.get_node_attributes(graph, "pos")
+        pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
+        nx.draw(graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+        if atom_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={atom.id: atom.id for atom in self.atoms}, font_size=7, font_color="gray")
+        if bond_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={bond.id: bond.id for bond in self.bonds}, font_size=7, font_color="gray")
+
+    def add_structure(self, structure: LAMMPSStructure) -> None:
+        for atom in structure.atoms:
+            if atom not in self.atoms:
+                raise ValueError(f"Atom {atom.id} {atom.label} is not in the data.")
+        structure.add_to_data(self)
 
 
 @dataclass
@@ -470,6 +467,11 @@ class LAMMPSAtom:
 
     def export_array(self) -> list:
         return [self.id, self.label, *self.coord]
+
+    def __eq__(self, other) -> bool:
+        return (self.id == other.id and
+                self.label == other.label and
+                np.array_equal(self.coord, other.coord))
 
 
 @dataclass
