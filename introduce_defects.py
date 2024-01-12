@@ -2,19 +2,25 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
+import matplotlib
 import networkx as nx
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.backend_bases import Event, KeyEvent, MouseEvent
 from scipy.spatial import KDTree
-import time
+
+from utils import (CouldNotBondUndercoordinatedNodesException,
+                   InvalidNetworkException,
+                   InvalidUndercoordinatedNodesException, LAMMPSAngle,
+                   LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCData, NetMCNetwork,
+                   NetMCNode)
 
 # The comment he's included in C.data 'Atoms' line is wrong, the atoms are being stored as regular atoms, not molecules
 # since there is a missing molecule ID column.
 
 # Comment for Masses in C.data is incorrect, should be 'C' not 'Si'
 
-# For some reason, he's written Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with different molecule IDs
+# For some reason, he's written Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with unique molecule IDs
 
 # In C.data, Si.data, all atoms have a z coordinate of 0
 # In SiO2.data, all Si atoms alternate between z = 5 and z = 11.081138669036534
@@ -23,8 +29,7 @@ import time
 
 # Need to have a look at his C++ source code to see how *.data, *.in and *.lammps are being used
 # And therefore if any corrections are in order for how he writes these files.
-
-from utils import LAMMPSAngle, LAMMPSAtom, LAMMPSBond, LAMMPSData, NetMCData, NetMCNetwork, NetMCNode
+matplotlib.use('TkAgg')
 
 # Constants
 ANGSTROM_TO_BOHR = 1 / 0.52917721090380
@@ -254,23 +259,6 @@ def find_common_elements(lists: list[list]) -> list:
     return common_elements
 
 
-def bond_undercoordinated_nodes(netmc_data: NetMCData) -> None:
-    undercoordinated_nodes = get_undercoordinated_nodes(netmc_data.base_network)
-    if len(undercoordinated_nodes) % 2 != 0:
-        raise ValueError("Number of undercoordinated nodes is odd, so cannot bond them.")
-    while len(undercoordinated_nodes) > 0:
-        tree = KDTree([node.coord for node in undercoordinated_nodes])
-        point = [undercoordinated_nodes[0].x, undercoordinated_nodes[0].y]
-        _, indices = tree.query(point, k=2)
-        if undercoordinated_nodes[indices[0]] == undercoordinated_nodes[0]:
-            nearest_neighbour = undercoordinated_nodes[indices[1]]
-        else:
-            nearest_neighbour = undercoordinated_nodes[indices[0]]
-        netmc_data.split_ring(undercoordinated_nodes[0], nearest_neighbour)
-        undercoordinated_nodes.remove(undercoordinated_nodes[0])
-        undercoordinated_nodes.remove(nearest_neighbour)
-
-
 def get_ring_walk(ring: NetMCNode) -> list[NetMCNode]:
     """
     Returns a list of nodes such that the order is how they are connected in the ring.
@@ -295,21 +283,15 @@ def save_plot(output_path: Path, netmc_data: NetMCData, counter: int) -> None:
     plt.clf()
 
 
-def plot_graph(graph: nx.Graph, node_colour: str, radius: float, edge_colour: str, thickness: float,
-               labels: bool = False) -> None:
-    pos = nx.get_node_attributes(graph, "pos")
-    label_pos = {node: (x + 0.1, y + 0.1) for node, (x, y) in pos.items()}
-    nx.draw(graph, pos, node_size=radius, node_color=node_colour, edge_color=edge_colour, width=thickness)
-    if labels:
-        nx.draw_networkx_labels(graph, label_pos)
-
-
 class GraphPlotter:
     def __init__(self, netmc_data: NetMCData, output_path: Path):
         self.netmc_data = netmc_data
         self.output_path = output_path
         self.fig, self.ax = plt.subplots()
+        self.fig.set_size_inches(10, 10)
+        self.fig.canvas.manager.window.title("NetMC Defect Editor")
         self.nodes = np.array([node.coord for node in self.netmc_data.base_network.nodes])
+        self.click = False
 
     def on_key_press(self, event: KeyEvent) -> None:
         if event.key in ["q", "escape"]:
@@ -317,38 +299,75 @@ class GraphPlotter:
 
     def save_data(self) -> None:
         print(f"Saving data to {str(self.output_path)}...")
+        self.netmc_data.check()
         self.netmc_data.export(self.output_path, "test")
         plt.close(self.fig)
 
+    def on_press(self, event: MouseEvent):
+        self.click = True
+
+    def on_release(self, event: MouseEvent):
+        toolbar = plt.get_current_fig_manager().toolbar
+        if toolbar.mode != '':
+            return
+        if self.click:
+            self.onclick(event)
+        self.click = False
+
     def onclick(self, event: MouseEvent):
+        if event.dblclick:
+            return
         try:
             if event.button == 1:  # Left click
                 node, _ = self.netmc_data.base_network.get_nearest_node(np.array([event.xdata, event.ydata]))
-                rings_to_merge = node.ring_neighbours
-                self.netmc_data.delete_node(node)
-                self.netmc_data.merge_nodes(rings_to_merge)
+                self.netmc_data.delete_node_and_merge_rings(node)
+                print(f"Max ring size: {self.netmc_data.ring_network.max_ring_connections}")
                 self.refresh_plot()
 
             elif event.button == 3:  # Right click
                 print("Bonding undercoordinated nodes...")
-                bond_undercoordinated_nodes(self.netmc_data)
-                self.save_data()
+                try:
+                    self.netmc_data = NetMCData.bond_undercoordinated_nodes(self.netmc_data)
+                    self.save_data()
+                except InvalidUndercoordinatedNodesException as e:
+                    if str(e) == "Number of undercoordinated nodes is odd, so cannot bond them.":
+                        print("Number of undercoordinated nodes is odd, so cannot bond them.\n Please select another node to delete.")
+                    elif str(e) == "There are three consecutive undercoordinated nodes in the ring walk.":
+                        print("There are three consecutive undercoordinated nodes in the ring walk.\n Please select another node to delete.")
+                    elif str(e) == "There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.":
+                        print("There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.\n"
+                              "This means we would have to bond an undercoordinated node to one of its own neighbours, which is not allowed.\n"
+                              "Please select another node to delete.")
+                    else:
+                        raise
         except ValueError as e:
             if str(e) != "'x' must be finite, check for nan or inf values":
                 raise
 
     def refresh_plot(self):
-        plt.clf()
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
+        self.ax.clear()
+
         plt.gca().set_aspect('equal', adjustable='box')
-        plt.draw()
-        plot_graph(self.netmc_data.ring_network.graph, "blue", 20, "black", 1)
-        plot_graph(self.netmc_data.base_network.graph, "red", 30, "black", 2)
+        self.netmc_data.draw_graph()
+
+        # Only set xlim and ylim if they have been changed from their default values
+        if xlim != (0.0, 1.0):
+            self.ax.set_xlim(xlim)
+        if ylim != (0.0, 1.0):
+            self.ax.set_ylim(ylim)
+
         plt.pause(0.001)
 
     def plot(self):
         self.refresh_plot()
-        self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        self.cid_press = self.fig.canvas.mpl_connect('button_press_event', self.on_press)
+        self.cid_release = self.fig.canvas.mpl_connect('button_release_event', self.on_release)
         self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
+        self.netmc_data.check()
+        plt.title("NetMC Defect Editor")
         plt.show()
 
 
