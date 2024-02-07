@@ -1306,7 +1306,7 @@ class DrawLineWidget:
                     cv2.imshow("image", self.clone)
                     cv2.imshow('image', draw_line_widget.show_image())
                     cv2.waitKey(1)
-                    self.write_local(local_nodes, local_dual,)
+                    self.write_local(local_nodes, local_dual, "A")
 
                 return
 
