@@ -143,18 +143,13 @@ def is_pbc_bond(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> b
 class NetMCNetwork:
     nodes: list[NetMCNode] = field(default_factory=lambda: [])
     type: str = "base"
+    dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
     geom_code: str = "2DE"
 
     def __post_init__(self):
         self.avg_bond_length = np.mean([bond.length for bond in self.bonds])
         self._ = self.get_avg_ring_bond_length()
         self.avg_ring_bond_length = self._.copy()
-
-    def __repr__(self) -> str:
-        string = f"NetMCNetwork of type {self.type} with {self.num_nodes} nodes: \n"
-        for node in self.nodes:
-            string += f"{node}\n"
-        return string
 
     def delete_node(self, node: NetMCNode) -> None:
         if node.type == self.type:
@@ -205,6 +200,11 @@ class NetMCNetwork:
         for node in self.nodes:
             node.translate(vector)
 
+    def scale(self, scale_factor: float) -> None:
+        for node in self.nodes:
+            node.scale(scale_factor)
+        self.dimensions *= scale_factor
+
     def get_nearest_node(self, point: np.array) -> tuple[NetMCNode, float]:
         distance, index = self.kdtree.query(point)
         return self.nodes[index], distance
@@ -254,8 +254,7 @@ class NetMCNetwork:
         Evaluates the strain of a network using a very basic model. E = sum((l - l_0)^2) + sum((theta - theta_0)^2)
         Bond angles are in degrees.
         """
-        bond_length_strain = np.sum(
-            [(bond.length - ideal_bond_length) ** 2 for bond in self.bonds])
+        bond_length_strain = np.sum([(bond.length - ideal_bond_length) ** 2 for bond in self.bonds])
         angle_strain = 0
         for angle in self.get_angles():
             angle_deviation = calculate_angle(
@@ -338,18 +337,22 @@ class NetMCNetwork:
         if isinstance(other, NetMCNetwork):
             return (self.nodes == other.nodes and
                     self.type == other.type and
+                    self.dimensions == other.dimensions and
                     self.geom_code == other.geom_code)
         return False
+
+    def __repr__(self) -> str:
+        string = f"NetMCNetwork of type {self.type} with {self.num_nodes} nodes: \n"
+        for node in self.nodes:
+            string += f"{node}\n"
+        return string
 
 
 @dataclass
 class NetMCData:
-    base_network: NetMCNetwork = field(
-        default_factory=lambda: NetMCNetwork([], "base"))
-    ring_network: NetMCNetwork = field(
-        default_factory=lambda: NetMCNetwork([], "ring"))
-    dimensions: np.ndarray = field(
-        default_factory=lambda: np.array([[0, 0], [1, 1]]))
+    base_network: NetMCNetwork = field(default_factory=lambda: NetMCNetwork([], "base", np.array([[0, 0], [1, 1]])))
+    ring_network: NetMCNetwork = field(default_factory=lambda: NetMCNetwork([], "ring", np.array([[0, 0], [1, 1]])))
+    dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
 
     @staticmethod
     def from_files(path: Path, prefix: str):
@@ -361,12 +364,12 @@ class NetMCData:
         fill_neighbours(path.joinpath(f"{prefix}_B_dual.dat"), ring_nodes, base_nodes)
         dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
         _, ring_geom_code = get_aux_data(path.joinpath(f"{prefix}_B_aux.dat"))
-        base_network = NetMCNetwork(base_nodes, "base", base_geom_code)
-        ring_network = NetMCNetwork(ring_nodes, "ring", ring_geom_code)
+        base_network = NetMCNetwork(base_nodes, "base", dimensions, base_geom_code)
+        ring_network = NetMCNetwork(ring_nodes, "ring", dimensions, ring_geom_code)
         return NetMCData(base_network, ring_network, dimensions)
 
     @staticmethod
-    def gen_triangle_lattice(num_rings: int) -> NetMCData:
+    def gen_hexagonal(num_rings: int) -> NetMCData:
         netmc_data = NetMCData()
         length = rounded_sqrt(num_rings)
         num_ring_nodes = length * length
@@ -448,6 +451,13 @@ class NetMCData:
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
         self.dimensions = dimensions
+        self.base_network.dimensions = dimensions.copy()
+        self.ring_network.dimensions = dimensions.copy()
+
+    def scale(self, scale_factor: float) -> None:
+        self.dimensions *= scale_factor
+        self.base_network.scale(scale_factor)
+        self.ring_network.scale(scale_factor)
 
     def export(self, path: Path, prefix: str) -> None:
         self.base_network.export(path, prefix)
@@ -749,18 +759,20 @@ class NetMCData:
             coord=node.coord, id=node.id, type=node.type) for node in self.ring_network.nodes}
         for node in self.base_network.nodes:
             copied_node = copied_base_nodes_dict[id(node)]
-            copied_node.neighbours = [copied_base_nodes_dict[id(
-                neighbour)] for neighbour in node.neighbours]
-            copied_node.ring_neighbours = [copied_ring_nodes_dict[id(
-                neighbour)] for neighbour in node.ring_neighbours]
+            copied_node.neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
+            copied_node.ring_neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
         for node in self.ring_network.nodes:
             copied_node = copied_ring_nodes_dict[id(node)]
-            copied_node.neighbours = [copied_ring_nodes_dict[id(
-                neighbour)] for neighbour in node.neighbours]
-            copied_node.ring_neighbours = [copied_base_nodes_dict[id(
-                neighbour)] for neighbour in node.ring_neighbours]
-        return NetMCData(NetMCNetwork(list(copied_base_nodes_dict.values()), "base", self.base_network.geom_code),
-                         NetMCNetwork(list(copied_ring_nodes_dict.values()), "ring", self.ring_network.geom_code))
+            copied_node.neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
+            copied_node.ring_neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
+        return NetMCData(NetMCNetwork(list(copied_base_nodes_dict.values()), "base", self.dimensions, self.base_network.geom_code),
+                         NetMCNetwork(list(copied_ring_nodes_dict.values()), "ring", self.dimensions, self.ring_network.geom_code),
+                         self.dimensions)
+
+    def __repr__(self) -> str:
+        string = f"NetMCData with dimensions:\nxlo: {self.xlo}\txhi: {self.xhi}\tylo: {self.ylo}\tyhi: {self.yhi}\n"
+        string += f"Base network:\n{self.base_network}\nRing network:\n{self.ring_network}"
+        return string
 
 
 @dataclass
@@ -818,20 +830,40 @@ class NetMCNode:
             node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
             yield (node_1, self, node_2)
 
+    def sort_nodes_clockwise(self, nodes: list[NetMCNode]) -> None:
+        """
+        Sorts the given nodes in clockwise order.
+        """
+        def angle_to_node(node):
+            """
+            Returns the angle between the x-axis and the vector from the node
+            to the given node in radians, range of -pi to pi.
+            """
+            dx = node.x - self.x
+            dy = node.y - self.y
+            return np.arctan2(dy, dx)
+
+        nodes.sort(key=angle_to_node)
+
     def add_neighbour(self, neighbour: 'NetMCNode') -> None:
         self.neighbours.append(neighbour)
+        self.sort_nodes_clockwise(self.neighbours)
 
     def delete_neighbour(self, neighbour: 'NetMCNode') -> None:
         self.neighbours.remove(neighbour)
 
     def add_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
         self.ring_neighbours.append(neighbour)
+        self.sort_nodes_clockwise(self.ring_neighbours)
 
     def delete_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
         self.ring_neighbours.remove(neighbour)
 
     def translate(self, vector: np.array) -> None:
         self.coord += vector
+
+    def scale(self, scale_factor: float) -> None:
+        self.coord *= scale_factor
 
     @property
     def num_neighbours(self) -> int:
