@@ -118,19 +118,22 @@ def netmc_to_triangle_raft(netmc_network: NetMCNetwork) -> LAMMPSData:
     triangle_raft_lammps_data = LAMMPSData.from_netmc_network(netmc_network, atom_label="Si", atomic_mass=28.1, atom_style="atomic")
     # triangle_raft_lammps_data.scale_coords(SI_SI_DISTANCE_BOHR)
     triangle_raft_lammps_data.add_mass("O", 15.995)
-    print(triangle_raft_lammps_data.dimensions)
     dimension_ranges = triangle_raft_lammps_data.dimensions[1] - triangle_raft_lammps_data.dimensions[0]
     nodes_to_add = []
     for bond in triangle_raft_lammps_data.get_bonds():
-        vector_between_si_atoms = triangle_raft_lammps_data.get_pbc_vector(bond.atom_1, bond.atom_2)
+        vector_between_si_atoms = bond.get_pbc_vector(netmc_network.dimensions)
+        normalized_vector = vector_between_si_atoms / np.linalg.norm(vector_between_si_atoms)
         midpoint = (bond.atom_1.coord + vector_between_si_atoms / 2) % dimension_ranges
-        new_o_atom = LAMMPSAtom(midpoint, "O")
+        gradings = [abs(np.dot(normalized_vector, displacement_vector)) for displacement_vector in DISPLACEMENT_VECTORS_NORM]
+        selected_vector = gradings.index(min(gradings))
+        if gradings[selected_vector] < 0.1:
+            new_o_atom = LAMMPSAtom(midpoint + DISPLACEMENT_VECTORS_FACTORED[selected_vector], "O")
+        else:
+            new_o_atom = LAMMPSAtom(midpoint, "O")
         new_o_atom.neighbours = [bond.atom_1, bond.atom_2]
         nodes_to_add.append(new_o_atom)
     for node in nodes_to_add:
-        print(node)
         triangle_raft_lammps_data.add_atom(node)
-
     print("Finished generating triangle raft.")
     return triangle_raft_lammps_data
 
@@ -139,17 +142,22 @@ def netmc_to_triangle_raft(netmc_network: NetMCNetwork) -> LAMMPSData:
 
 
 cwd = Path.cwd()
-netmc_data = NetMCData.from_files(cwd.joinpath("output_files"), "test")
-netmc_data.check()
-netmc_data.draw_graph(True, True, True, True, True, False, False)
+netmc_data = NetMCData.gen_hexagonal(1000)
+netmc_data.scale(3)
+
+lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, atom_label="Si", atomic_mass=28.1, atom_style="molecular")
+print(lammps_data)
+lammps_data.export(cwd.joinpath("test.data"))
+lammps_data.draw_graph(["Si"], ["Si-Si"], {"Si": "yellow"}, {"Si-Si": "black"}, {"Si": 30}, False, False)
 plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
-tr_lammps_data = netmc_to_triangle_raft(netmc_data.base_network)
-print(tr_lammps_data.num_atoms)
+# tr_lammps_data = netmc_to_triangle_raft(netmc_data.base_network)
+# print(tr_lammps_data.num_atoms)
 
-tr_lammps_data.check()
-tr_lammps_data.draw_graph(["Si", "O"], ["O-Si", "Si-Si", "O-O"], {"Si": "yellow", "O": "red"}, {"O-Si": "black", "Si-Si": "black", "O-O": "black"},
-                          {"Si": 30, "O": 15}, False, False)
-plt.gca().set_aspect('equal', adjustable='box')
-plt.show()
+# tr_lammps_data.check()
+# tr_lammps_data.draw_graph(["Si", "O"], ["O-Si", "Si-Si", "O-O"], {"Si": "yellow", "O": "red"},
+#                           {"O-Si": "black", "Si-Si": "black", "O-O": "black"},
+#                           {"Si": 30, "O": 15}, False, False)
+# plt.gca().set_aspect('equal', adjustable='box')
+# plt.show()
