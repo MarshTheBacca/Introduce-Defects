@@ -1,6 +1,8 @@
 from pathlib import Path
 import networkx as nx
 from matplotlib import pyplot as plt
+import difflib
+import time
 
 from utils import NetMCData
 import filecmp
@@ -41,27 +43,16 @@ def plot_graph(graph: nx.Graph) -> None:
     plt.show()
 
 
-cwd = Path.cwd()
-netmc_data = NetMCData.from_files(cwd.joinpath("test_input"), "test")
-netmc_data.check()
-netmc_data.delete_node(netmc_data.base_network.nodes[0])
-netmc_data.check()
-output_netmc_data = NetMCData.from_files(cwd.joinpath("test_output"), "test")
-output_netmc_data.check()
-if netmc_data == output_netmc_data:
-    print("Success!")
-else:
-    if netmc_data.base_network != output_netmc_data.base_network:
-        print("Base network not equal!")
-        if netmc_data.base_network.nodes != output_netmc_data.base_network.nodes:
-            print("Base network nodes not equal!")
-        if netmc_data.base_network.bonds != output_netmc_data.base_network.bonds:
-            print("Base network bonds not equal!")
-        if netmc_data.base_network.ring_bonds != output_netmc_data.base_network.ring_bonds:
-            print("Base network ring bonds not equal!")
-            print(len(netmc_data.base_network.ring_bonds))
-        if netmc_data.base_network.geom_code != output_netmc_data.base_network.geom_code:
-            print("Base network geom code not equal!")
+t1 = time.perf_counter()
+netmc_data = NetMCData.gen_triangle_lattice(10000)
+t2 = time.perf_counter()
+netmc_data.draw_graph(True, True, True, True, True, False, False)
+t3 = time.perf_counter()
 
-    if netmc_data.ring_network != output_netmc_data.ring_network:
-        print("Ring network not equal!")
+plt.gca().set_aspect('equal', adjustable='box')
+plt.show()
+t4 = time.perf_counter()
+
+print(f"Time to generate lattice: {t2 - t1}")
+print(f"Time to draw graph: {t3 - t2}")
+print(f"Time to show graph: {t4 - t3}")
