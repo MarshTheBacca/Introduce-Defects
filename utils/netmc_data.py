@@ -263,14 +263,10 @@ class NetMCNetwork:
         return bond_length_strain + angle_strain
 
     def export(self, dimensions: np.ndarray, path: Path, prefix: str) -> None:
-        self.export_aux(path.joinpath(
-            f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_aux.dat"), dimensions)
-        self.export_coords(path.joinpath(
-            f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_crds.dat"))
-        self.export_base_bonds(path.joinpath(
-            f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_net.dat"))
-        self.export_ring_bonds(path.joinpath(
-            f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_dual.dat"))
+        self.export_aux(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_aux.dat"), dimensions)
+        self.export_coords(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_crds.dat"))
+        self.export_base_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_net.dat"))
+        self.export_ring_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_dual.dat"))
 
     def export_aux(self, path: Path, dimensions: np.ndarray) -> None:
         with open(path, "w") as aux_file:
@@ -460,8 +456,8 @@ class NetMCData:
         self.ring_network.scale(scale_factor)
 
     def export(self, path: Path, prefix: str) -> None:
-        self.base_network.export(path, prefix)
-        self.ring_network.export(path, prefix)
+        self.base_network.export(self.dimensions, path, prefix)
+        self.ring_network.export(self.dimensions, path, prefix)
 
     def check(self) -> None:
         self.base_network.check()
@@ -905,16 +901,15 @@ class NetMCBond:
     node_1: NetMCNode
     node_2: NetMCNode
 
+    def __post_init__(self) -> None:
+        self.type = f"{self.node_1.type}-{self.node_2.type}"
+
     @property
     def length(self) -> float:
         return np.linalg.norm(self.node_1.coord - self.node_2.coord)
 
     def pbc_length(self, dimensions: np.ndarray) -> float:
         return np.linalg.norm(pbc_vector(self.node_1.coord, self.node_2.coord, dimensions))
-
-    @property
-    def type(self) -> str:
-        return f"{self.node_1.type}-{self.node_2.type}"
 
     def check(self) -> bool:
         if self.node_1 == self.node_2:
