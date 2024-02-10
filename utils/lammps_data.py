@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import collections
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Optional, Iterator
+from typing import IO, Optional
 
 import networkx as nx
 import numpy as np
@@ -166,8 +164,9 @@ class LAMMPSData:
             raw_lines = data_file.read().split("\n")
         lines = []
         for line in raw_lines:
-            if remove_comment(line):
-                lines.append(remove_comment(line))
+            stripped_line = remove_comment(line)
+            if stripped_line:
+                lines.append(stripped_line)
         parm_lines = lines[:min(header_to_index.values())]
         atom_lines = get_lines_between_headers(lines, "Atoms", HEADER_NAMES)
         bond_lines = get_lines_between_headers(lines, "Bonds", HEADER_NAMES)
@@ -197,16 +196,6 @@ class LAMMPSData:
     def add_mass(self, label: str, mass: float) -> None:
         self.masses[label] = mass
 
-    def scale_coords(self, scale_factor: float) -> None:
-        for atom in self.atoms:
-            atom.coord *= scale_factor
-        self.dimensions *= scale_factor
-
-    def export_bonds_pairs(self, path: Path) -> None:
-        with open(path, 'w') as bond_file:
-            for bond in self.bonds:
-                bond_file.write(f"{bond.atom_1.id}    {bond.atom_2.id}\n")
-
     def add_atom(self, atom: LAMMPSAtom) -> None:
         if atom.num_dimensions != self.num_dimensions:
             raise ValueError(f"Atom {atom.id} has {atom.num_dimensions} dimensions, but the data has {self.num_dimensions}.")
@@ -230,17 +219,31 @@ class LAMMPSData:
             if bond.atom_1 == atom or bond.atom_2 == atom:
                 self.bonds.remove(bond)
                 self.num_bonds -= 1
+                if self.bond_labels[bond.label] == 1:
+                    self.bond_labels.pop(bond.label)
+                    self.num_bond_labels -= 1
+                else:
+                    self.bond_labels[bond.label] -= 1
         for angle in self.angles:
             if angle.atom_1 == atom or angle.atom_2 == atom or angle.atom_3 == atom:
                 self.angles.remove(angle)
                 self.num_angles -= 1
+                if self.angle_labels[angle.label] == 1:
+                    self.angle_labels.pop(angle.label)
+                    self.num_angle_labels -= 1
+                else:
+                    self.angle_labels[angle.label] -= 1
         self.atoms.remove(atom)
         self.num_atoms -= 1
-        for i, atom in enumerate(self.atoms, start=1):
-            atom.id = i
         if self.atom_labels[atom.label] == 1:
             self.atom_labels.pop(atom.label)
             self.num_atom_labels -= 1
+        for i, atom in enumerate(self.atoms, start=1):
+            atom.id = i
+        for i, bond in enumerate(self.bonds, start=1):
+            bond.id = i
+        for i, angle in enumerate(self.angles, start=1):
+            angle.id = i
 
     def add_bond(self, atom_1: LAMMPSAtom, atom_2: LAMMPSAtom) -> None:
         old_angles = atom_1.get_angles() + atom_2.get_angles()
@@ -275,25 +278,28 @@ class LAMMPSData:
 
     def _handle_new_angles(self, old_angles: list[LAMMPSAngle], new_angles: list[LAMMPSAngle]) -> None:
         for angle in old_angles:
-            if angle not in new_angles:
-                self.angles.remove(angle)
-                self.num_angles -= 1
-                if self.angle_labels[angle.label] == 1:
-                    self.angle_labels.pop(angle.label)
-                    self.num_angle_labels -= 1
-                else:
-                    self.angle_labels[angle.label] -= 1
+            self.angles.remove(angle)
+            self.num_angles -= 1
+            if self.angle_labels[angle.label] == 1:
+                self.angle_labels.pop(angle.label)
+                self.num_angle_labels -= 1
+            else:
+                self.angle_labels[angle.label] -= 1
         for angle in new_angles:
-            if angle not in old_angles:
-                self.angles.append(angle)
-                self.num_angles += 1
-                if angle.label not in self.angle_labels:
-                    self.angle_labels[angle.label] = 1
-                    self.num_angle_labels += 1
-                else:
-                    self.angle_labels[angle.label] += 1
+            self.angles.append(angle)
+            self.num_angles += 1
+            if angle.label not in self.angle_labels:
+                self.angle_labels[angle.label] = 1
+                self.num_angle_labels += 1
+            else:
+                self.angle_labels[angle.label] += 1
         for i, angle in enumerate(self.angles, start=1):
             angle.id = i
+
+    def export_bonds_pairs(self, path: Path) -> None:
+        with open(path, 'w') as bond_file:
+            for bond in self.bonds:
+                bond_file.write(f"{bond.atom_1.id}    {bond.atom_2.id}\n")
 
     def bond_atoms_within_distance(self, distance: float) -> list[tuple[int, int]]:
         """
@@ -307,6 +313,11 @@ class LAMMPSData:
             atom_1 = self.atoms[bond[0]]
             atom_2 = self.atoms[bond[1]]
             self.add_bond(atom_1, atom_2)
+
+    def scale_coords(self, scale_factor: float) -> None:
+        for atom in self.atoms:
+            atom.coord *= scale_factor
+        self.dimensions *= scale_factor
 
     def draw_graph(self, atom_labels_to_plot: list[str], bond_labels_to_plot: list[str],
                    atom_colours: dict, bond_colours: dict, atom_sizes: dict,
@@ -543,6 +554,8 @@ class LAMMPSAtom:
 
     @property
     def export_array(self) -> list[int, str, float, float, float]:
+        if self.num_dimensions == 2:
+            return [self.id, self.label, *self.coord, 0]
         return [self.id, self.label, *self.coord]
 
     def __eq__(self, other) -> bool:
@@ -573,6 +586,8 @@ class LAMMPSMolecule(LAMMPSAtom):
         """
         Returns the array to be written to the data file.
         """
+        if self.num_dimensions == 2:
+            return [self.id, self.molecule_id, self.label, *self.coord, 0]
         return [self.id, self.molecule_id, self.label, *self.coord]
 
     def __eq__(self, other) -> bool:
