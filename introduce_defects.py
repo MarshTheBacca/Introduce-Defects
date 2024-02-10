@@ -22,7 +22,7 @@ from utils import (CouldNotBondUndercoordinatedNodesException,
 
 # Comment for Masses in C.data is incorrect, should be 'C' not 'Si'
 
-# For some reason, he's written Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with unique molecule IDs
+# For some reason, original wrote Si.data, SiO2.data and Si2O3.data atoms as molecule types, but with unique molecule IDs
 
 # In C.data, Si.data, all atoms have a z coordinate of 0
 # In SiO2.data, all Si atoms alternate between z = 5 and z = 11.081138669036534

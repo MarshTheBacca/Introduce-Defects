@@ -110,7 +110,7 @@ def write_lammps_files(path: Path, prefix: str, non_defect_netmc_network: NetMCN
 def netmc_to_triangle_raft(netmc_network: NetMCNetwork) -> LAMMPSData:
     print("Generating triangle raft...")
     # This will only work for exactly hexagonal networks
-    SI_SI_DISTANCE_FACTOR = np.sqrt(32.0 / 9.0)
+    SI_SI_DISTANCE_FACTOR = np.sqrt(32) / 3
     SI_SI_DISTANCE_BOHR = ANGSTROM_TO_BOHR * SI_O_LENGTH_ANGSTROM * SI_SI_DISTANCE_FACTOR
     # The last vector was originally [-0.5, -np.sqrt(3) / 3], but this seems wrong vvvvv
     DISPLACEMENT_VECTORS_NORM = np.array([[1, 0], [-0.5, np.sqrt(3) / 2], [-0.5, -np.sqrt(3) / 2]])
@@ -142,13 +142,14 @@ def netmc_to_triangle_raft(netmc_network: NetMCNetwork) -> LAMMPSData:
 
 
 cwd = Path.cwd()
-netmc_data = NetMCData.gen_hexagonal(1000)
-netmc_data.scale(3)
-
+netmc_data = NetMCData.gen_hexagonal(36)
+netmc_data.scale(2.3)
+netmc_data.export(cwd.joinpath("to_lammps"), "gi_test")
 lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, atom_label="Si", atomic_mass=28.1, atom_style="molecular")
-print(lammps_data)
-lammps_data.export(cwd.joinpath("test.data"))
-lammps_data.draw_graph(["Si"], ["Si-Si"], {"Si": "yellow"}, {"Si-Si": "black"}, {"Si": 30}, False, False)
+for angle in lammps_data.angles:
+    print(angle)
+lammps_data.export(cwd.joinpath("to_lammps", "gi_test.data"))
+lammps_data.draw_graph(["Si"], ["Si-Si"], {"Si": "yellow"}, {"Si-Si": "black"}, {"Si": 30}, True, False)
 plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
