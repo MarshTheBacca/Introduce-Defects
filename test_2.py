@@ -146,8 +146,6 @@ netmc_data = NetMCData.gen_hexagonal(36)
 netmc_data.scale(2.3)
 netmc_data.export(cwd.joinpath("to_lammps"), "gi_test")
 lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, atom_label="Si", atomic_mass=28.1, atom_style="molecular")
-for angle in lammps_data.angles:
-    print(angle)
 lammps_data.export(cwd.joinpath("to_lammps", "gi_test.data"))
 lammps_data.draw_graph(["Si"], ["Si-Si"], {"Si": "yellow"}, {"Si-Si": "black"}, {"Si": 30}, True, False)
 plt.gca().set_aspect('equal', adjustable='box')

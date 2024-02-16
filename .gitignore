@@ -2,3 +2,9 @@ utils/__pycache__/__init__.cpython-312.pyc
 utils/__pycache__/netmc_data_test.cpython-312.pyc
 utils/__pycache__/netmc_data.cpython-312.pyc
 utils/__pycache__/lammps_data.cpython-312.pyc
+input_files/
+output_files/
+Results_12_3194_444_LJ/
+t-3200_s0_same/
+test_output/
+*.pyc

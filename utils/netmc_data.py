@@ -56,7 +56,7 @@ def get_nodes(path: Path, network_type: str) -> list[NetMCNode]:
     return nodes
 
 
-def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: list[NetMCNode]) -> None:
+def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: list[NetMCNode], dimensions: np.array) -> None:
     """
     Read a file containing node connections and add the connections to the selected nodes.
     """
@@ -67,9 +67,9 @@ def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: l
                 node_1 = selected_nodes[selected_node]
                 node_2 = bonded_nodes[int(connected_node)]
                 if node_2.type == node_1.type and node_2 not in node_1.neighbours:
-                    node_1.add_neighbour(node_2)
+                    node_1.add_neighbour(node_2, dimensions)
                 elif node_2.type != node_1.type and node_2 not in node_1.ring_neighbours:
-                    node_1.add_ring_neighbour(node_2)
+                    node_1.add_ring_neighbour(node_2, dimensions)
 
 
 def get_aux_data(path: Path) -> tuple[np.ndarray, str]:
@@ -193,8 +193,8 @@ class NetMCNetwork:
         for node_index, neighbours in enumerate(indices):
             for neighbour, distance in zip(neighbours, distances[node_index]):
                 if node_index != neighbour and np.isclose(distance, target_distance, rtol=1e-2):
-                    self.nodes[node_index].add_neighbour(self.nodes[neighbour])
-                    self.nodes[neighbour].add_neighbour(self.nodes[node_index])
+                    self.nodes[node_index].add_neighbour(self.nodes[neighbour], self.dimensions)
+                    self.nodes[neighbour].add_neighbour(self.nodes[node_index], self.dimensions)
 
     def translate(self, vector: np.ndarray) -> None:
         for node in self.nodes:
@@ -352,13 +352,13 @@ class NetMCData:
 
     @staticmethod
     def from_files(path: Path, prefix: str):
+        dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
         base_nodes = get_nodes(path.joinpath(f"{prefix}_A_crds.dat"), "base")
         ring_nodes = get_nodes(path.joinpath(f"{prefix}_B_crds.dat"), "ring")
-        fill_neighbours(path.joinpath(f"{prefix}_A_net.dat"), base_nodes, base_nodes)
-        fill_neighbours(path.joinpath(f"{prefix}_B_net.dat"), ring_nodes, ring_nodes)
-        fill_neighbours(path.joinpath(f"{prefix}_A_dual.dat"), base_nodes, ring_nodes)
-        fill_neighbours(path.joinpath(f"{prefix}_B_dual.dat"), ring_nodes, base_nodes)
-        dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
+        fill_neighbours(path.joinpath(f"{prefix}_A_net.dat"), base_nodes, base_nodes, dimensions)
+        fill_neighbours(path.joinpath(f"{prefix}_B_net.dat"), ring_nodes, ring_nodes, dimensions)
+        fill_neighbours(path.joinpath(f"{prefix}_A_dual.dat"), base_nodes, ring_nodes, dimensions)
+        fill_neighbours(path.joinpath(f"{prefix}_B_dual.dat"), ring_nodes, base_nodes, dimensions)
         _, ring_geom_code = get_aux_data(path.joinpath(f"{prefix}_B_aux.dat"))
         base_network = NetMCNetwork(base_nodes, "base", dimensions, base_geom_code)
         ring_network = NetMCNetwork(ring_nodes, "ring", dimensions, ring_geom_code)
@@ -368,6 +368,8 @@ class NetMCData:
     def gen_hexagonal(num_rings: int) -> NetMCData:
         netmc_data = NetMCData()
         length = rounded_sqrt(num_rings)
+        dimensions = np.array([[0, 0], [length, length * np.sqrt(3) / 2]])
+        netmc_data.set_dimensions(dimensions)
         num_ring_nodes = length * length
         num_base_nodes = 2 * num_ring_nodes
         dy = np.sqrt(3) / 2  # Distance between rows
@@ -420,10 +422,10 @@ class NetMCData:
                 # Add dual neighbour below
                 ring_base_neighbours += [((2 * y - 1) * length + (id) % length) % num_base_nodes]
             for neighbour in ring_ring_neighbours:
-                netmc_data.ring_network.nodes[id].add_neighbour(netmc_data.ring_network.nodes[neighbour])
+                netmc_data.ring_network.nodes[id].add_neighbour(netmc_data.ring_network.nodes[neighbour], dimensions)
             for neighbour in ring_base_neighbours:
-                netmc_data.ring_network.nodes[id].add_ring_neighbour(netmc_data.base_network.nodes[neighbour])
-                netmc_data.base_network.nodes[neighbour].add_ring_neighbour(netmc_data.ring_network.nodes[id])
+                netmc_data.ring_network.nodes[id].add_ring_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
+                netmc_data.base_network.nodes[neighbour].add_ring_neighbour(netmc_data.ring_network.nodes[id], dimensions)
         for id in range(num_base_nodes):
             y, x = divmod(id, length)
             # Add neighbours to left and right
@@ -440,9 +442,8 @@ class NetMCData:
                 base_base_neighbours = [((y - 1) * length + (id) % length) % num_base_nodes]
                 base_base_neighbours += [((y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
             for neighbour in base_base_neighbours:
-                netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour])
+                netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
 
-        netmc_data.set_dimensions(np.array([[0, 0], [length, length * np.sqrt(3) / 2]]))
         return netmc_data
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
@@ -491,9 +492,9 @@ class NetMCData:
         self.base_network.add_node(node)
         self.ring_network.add_node(node)
         for neighbour in node.neighbours:
-            neighbour.add_neighbour(node)
+            neighbour.add_neighbour(node, self.dimensions)
         for ring_neighbour in node.ring_neighbours:
-            ring_neighbour.add_ring_neighbour(node)
+            ring_neighbour.add_ring_neighbour(node, self.dimensions)
 
     def delete_node_and_merge_rings(self, node: NetMCNode) -> None:
         rings_to_merge = node.ring_neighbours.copy()
@@ -520,8 +521,8 @@ class NetMCData:
             raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the ring network")
         if node_2.type == "ring" and node_2 not in self.ring_network.nodes:
             raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_2.id} is not in the ring network")
-        node_1.add_neighbour(node_2)
-        node_2.add_neighbour(node_1)
+        node_1.add_neighbour(node_2, self.dimensions)
+        node_2.add_neighbour(node_1, self.dimensions)
 
     def get_undrecoordinated_nodes(self, network: NetMCNetwork, target_coordination: int) -> list[NetMCNode]:
         undercoordinated_nodes = []
@@ -826,7 +827,7 @@ class NetMCNode:
             node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
             yield (node_1, self, node_2)
 
-    def sort_nodes_clockwise(self, nodes: list[NetMCNode]) -> None:
+    def sort_nodes_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
         """
         Sorts the given nodes in clockwise order.
         """
@@ -835,24 +836,23 @@ class NetMCNode:
             Returns the angle between the x-axis and the vector from the node
             to the given node in radians, range of -pi to pi.
             """
-            dx = node.x - self.x
-            dy = node.y - self.y
-            return np.arctan2(dy, dx)
+            periodic_vector = pbc_vector(self.coord, node.coord, dimensions)
+            return -np.arctan2(periodic_vector[1], periodic_vector[0])
 
         nodes.sort(key=angle_to_node)
 
-    def add_neighbour(self, neighbour: 'NetMCNode') -> None:
+    def add_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
         self.neighbours.append(neighbour)
-        self.sort_nodes_clockwise(self.neighbours)
+        self.sort_nodes_clockwise(self.neighbours, dimensions)
 
-    def delete_neighbour(self, neighbour: 'NetMCNode') -> None:
+    def delete_neighbour(self, neighbour: NetMCNode) -> None:
         self.neighbours.remove(neighbour)
 
-    def add_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
+    def add_ring_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
         self.ring_neighbours.append(neighbour)
-        self.sort_nodes_clockwise(self.ring_neighbours)
+        self.sort_nodes_clockwise(self.ring_neighbours, dimensions)
 
-    def delete_ring_neighbour(self, neighbour: 'NetMCNode') -> None:
+    def delete_ring_neighbour(self, neighbour: NetMCNode) -> None:
         self.ring_neighbours.remove(neighbour)
 
     def translate(self, vector: np.array) -> None:
