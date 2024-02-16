@@ -142,8 +142,9 @@ def netmc_to_triangle_raft(netmc_network: NetMCNetwork) -> LAMMPSData:
 
 
 cwd = Path.cwd()
-netmc_data = NetMCData.gen_hexagonal(36)
+netmc_data = NetMCData.gen_hexagonal(100)
 netmc_data.scale(2.3)
+cwd.joinpath("to_lammps").mkdir(exist_ok=True)
 netmc_data.export(cwd.joinpath("to_lammps"), "gi_test")
 lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, atom_label="Si", atomic_mass=28.1, atom_style="molecular")
 lammps_data.export(cwd.joinpath("to_lammps", "gi_test.data"))

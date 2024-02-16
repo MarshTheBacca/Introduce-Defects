@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Iterator
+import matplotlib.pyplot as plt
 
 import networkx as nx
 import numpy as np
@@ -105,13 +106,16 @@ def find_common_elements(lists: list[list]) -> list:
     return common_elements
 
 
-def rounded_sqrt(number: float) -> int:
+def rounded_even_sqrt(number: float) -> int:
     """
-    Return the square root of a number rounded to the nearest integer.
+    Return the square root of a number rounded down to the nearest even number.
     """
     if number < 0:
         raise ValueError("Cannot take the square root of a negative number.")
-    return int(np.sqrt(number) + 0.5)
+    rounded_root = np.floor(np.sqrt(number))
+    if rounded_root % 2 ==0:
+        return int(rounded_root)
+    return int(rounded_root - 1)
 
 
 def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
@@ -146,11 +150,6 @@ class NetMCNetwork:
     dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
     geom_code: str = "2DE"
 
-    def __post_init__(self):
-        self.avg_bond_length = np.mean([bond.length for bond in self.bonds])
-        self._ = self.get_avg_ring_bond_length()
-        self.avg_ring_bond_length = self._.copy()
-
     def delete_node(self, node: NetMCNode) -> None:
         if node.type == self.type:
             self.nodes.remove(node)
@@ -162,16 +161,6 @@ class NetMCNetwork:
             self.nodes.append(node)
             node.id = self.num_nodes - 1
 
-    # in a separate method because this is a time-consuming operation
-
-    def get_avg_bond_length(self) -> float:
-        bond_lengths = [bond.length for bond in self.bonds]
-        # filter out any periodic bonds
-        threshold = 4 * np.mean(bond_lengths)
-        return np.mean([length for length in bond_lengths if length < threshold])
-
-    def get_avg_ring_bond_length(self) -> float:
-        return np.mean([bond.length for bond in self.ring_bonds])
 
     def check(self) -> bool:
         valid = True
@@ -179,11 +168,14 @@ class NetMCNetwork:
             print(f"Network has invalid type {self.type}")
             valid = False
         for node in self.nodes:
-            valid = node.check()
+            if not node.check():
+                valid = False
         for bond in self.bonds:
-            valid = bond.check()
+            if not bond.check():
+                valid = False
         for ring_bond in self.ring_bonds:
-            valid = ring_bond.check()
+            if not ring_bond.check():
+                valid = False
         return valid
 
     def bond_close_nodes(self, target_distance: float, coordination: int) -> None:
@@ -208,6 +200,9 @@ class NetMCNetwork:
     def get_nearest_node(self, point: np.array) -> tuple[NetMCNode, float]:
         distance, index = self.kdtree.query(point)
         return self.nodes[index], distance
+    
+    def get_average_bond_length(self) -> float:
+        return np.mean([bond.pbc_length(self.dimensions) for bond in self.bonds])
 
     @property
     def kdtree(self):
@@ -367,17 +362,18 @@ class NetMCData:
     @staticmethod
     def gen_hexagonal(num_rings: int) -> NetMCData:
         netmc_data = NetMCData()
-        length = rounded_sqrt(num_rings)
-        dimensions = np.array([[0, 0], [length, length * np.sqrt(3) / 2]])
+        length = rounded_even_sqrt(num_rings)
+        dimensions = np.array([[0, 0], [np.sqrt(3) * length, 1.5 * length]])
         netmc_data.set_dimensions(dimensions)
+        
         num_ring_nodes = length * length
         num_base_nodes = 2 * num_ring_nodes
-        dy = np.sqrt(3) / 2  # Distance between rows
+        dy = 1.5  # Distance between rows of rings
 
         # Add ring nodes
         for y in range(length):
             for x in range(length):
-                ring_node_coord = np.array([1 / 2 * (y % 2) + x, (1 / 2 + y) * dy])
+                ring_node_coord = np.array([np.sqrt(3) / 2 * (- (y % 2) + 2 * x + 1.5),  y * dy + 0.75])
                 netmc_data.add_node(NetMCNode(ring_node_coord, "ring", [], []))
 
         # Add base nodes in two loops to get left-to-right, bottom-to-top ordering of IDs
@@ -385,12 +381,18 @@ class NetMCData:
             # Add lower base nodes
             for x in range(length):
                 node = netmc_data.ring_network.nodes[y * length + x]
-                base_node_coord = node.coord + np.array([1 / 2, -np.sqrt(3) / 6])
+                if y % 2 == 0:
+                    base_node_coord = node.coord + np.array([-np.sqrt(3) / 2, -1 / 2])
+                else:
+                    base_node_coord = node.coord + np.array([np.sqrt(3) / 2, -1 / 2])
                 netmc_data.add_node(NetMCNode(base_node_coord, "base", [], []))
             # Add upper base nodes
             for x in range(length):
                 node = netmc_data.ring_network.nodes[y * length + x]
-                base_node_coord = node.coord + np.array([1 / 2, np.sqrt(3) / 6])
+                if y % 2 == 0:
+                    base_node_coord = node.coord + np.array([-np.sqrt(3) / 2, 1 / 2])
+                else:
+                    base_node_coord = node.coord + np.array([np.sqrt(3) / 2, 1 / 2])
                 netmc_data.add_node(NetMCNode(base_node_coord, "base", [], []))
 
         # Add connections
@@ -398,25 +400,31 @@ class NetMCData:
             y, x = divmod(id, length)
             # Add neighbours to left and right
             ring_ring_neighbours = [(y * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 1]]
-            # Add dual neighbours to left and right (slightly below ring node)
-            ring_base_neighbours = [(2 * y * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
-            # Add dual neighbours to left and right (slightly above ring node)
-            ring_base_neighbours += [((2 * y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
+
 
             if y % 2 == 0:
-                # Add neighbours above to the left and right
-                ring_ring_neighbours += [((y + 1) * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 0]]
-                # Add neighbours below to the left and right
-                ring_ring_neighbours += [((y - 1) * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 0]]
-                # Add dual neighbour above
-                ring_base_neighbours += [((2 * y + 2) * length + (id - 1) % length) % num_base_nodes]
-                # Add dual neighbour below
-                ring_base_neighbours += [((2 * y - 1) * length + (id - 1) % length) % num_base_nodes]
-            else:
+                # Add dual neighbours to left and right (slightly below ring node)
+                ring_base_neighbours = [(2 * y * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
+                # Add dual neighbours to left and right (slightly above ring node)
+                ring_base_neighbours += [((2 * y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
                 # Add neighbours above to the left and right
                 ring_ring_neighbours += [((y + 1) * length + (id + offset) % length) % num_ring_nodes for offset in [0, 1]]
                 # Add neighbours below to the left and right
                 ring_ring_neighbours += [((y - 1) * length + (id + offset) % length) % num_ring_nodes for offset in [0, 1]]
+                # Add dual neighbour above
+                ring_base_neighbours += [((2 * y + 2) * length + id % length) % num_base_nodes]
+                # Add dual neighbour below
+                ring_base_neighbours += [((2 * y - 1) * length + id % length) % num_base_nodes]
+            else:
+                # Add dual neighbours to left and right (slightly below ring node)
+                ring_base_neighbours = [(2 * y * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
+                # Add dual neighbours to left and right (slightly above ring node)
+                ring_base_neighbours += [((2 * y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
+                
+                # Add neighbours above to the left and right
+                ring_ring_neighbours += [((y + 1) * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 0]]
+                # Add neighbours below to the left and right
+                ring_ring_neighbours += [((y - 1) * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 0]]
                 # Add dual neighbour above
                 ring_base_neighbours += [((2 * y + 2) * length + (id) % length) % num_base_nodes]
                 # Add dual neighbour below
@@ -443,7 +451,6 @@ class NetMCData:
                 base_base_neighbours += [((y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
             for neighbour in base_base_neighbours:
                 netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
-
         return netmc_data
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
@@ -460,9 +467,11 @@ class NetMCData:
         self.base_network.export(self.dimensions, path, prefix)
         self.ring_network.export(self.dimensions, path, prefix)
 
-    def check(self) -> None:
-        self.base_network.check()
-        self.ring_network.check()
+    def check(self) -> bool:
+        if self.base_network.check() and self.ring_network.check():
+            return True
+        return False
+        
 
     def __eq__(self, other) -> bool:
         if isinstance(other, NetMCData):
@@ -683,6 +692,7 @@ class NetMCData:
                    base_bonds: bool = True, ring_bonds: bool = False, base_ring_bonds: bool = False,
                    base_labels: bool = False, ring_labels: bool = False, offset: float = 0.2) -> None:
         graph = nx.Graph()
+        
         id_shift = 0
         if base_nodes:
             for node in self.base_network.nodes:
@@ -726,6 +736,11 @@ class NetMCData:
                       for node, (x, y) in pos.items()}
         nx.draw(graph, pos, node_color=node_colors,
                 edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+        plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
+        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
+        plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
+        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
+                
         if base_labels:
             nx.draw_networkx_labels(graph, pos_labels, labels={
                                     node.id: node.id for node in self.base_network.nodes}, font_size=7, font_color="gray")
