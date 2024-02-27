@@ -146,87 +146,6 @@ def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray)
     difference_vector = (difference_vector + half_dimension_ranges) % dimension_ranges - half_dimension_ranges
     return difference_vector
 
-def determinant(vector_1: np.array, vector_2: np.array) -> float:
-    return np.dot(vector_1[0], vector_2[1]) - np.dot(vector_1[1], vector_2[0])
-
-def line_intersection(line_1: np.array, line_2: np.array) -> np.array:
-    delta_x = np.array([line_1[0][0] - line_1[1][0], line_2[0][0] - line_2[1][0]])
-    delta_y = np.array([line_1[0][1] - line_1[1][1], line_2[0][1] - line_2[1][1]])
-
-    div = determinant(delta_x, delta_y)
-    if div == 0:
-       raise ValueError('lines do not intersect')
-
-    d1 = determinant(*line_1)
-    d2 = determinant(*line_2)
-    x = determinant(np.array([d1, d2]), delta_x) / div
-    y = determinant(np.array([d1, d2]), delta_y) / div
-    
-    # print(f"\nFinding intersection between lines described by:")
-    # print(f"Line 1: {line_1[0][0]:.2f} {line_1[0][1]:.2f} {line_1[1][0]:.2f} {line_1[1][1]:.2f}")
-    # print(f"Line 2: {line_2[0][0]:.2f} {line_2[0][1]:.2f} {line_2[1][0]:.2f} {line_2[1][1]:.2f}\n")
-
-    # Check if the intersection point is within the line segment
-    if np.isclose(x, line_2[0][0], atol=1e-8) or np.isclose(x, line_2[1][0], atol=1e-8) or \
-       min(line_1[0][0], line_1[1][0]) <= x <= max(line_1[0][0], line_1[1][0]):
-        if np.isclose(y, line_2[0][1], atol=1e-8) or np.isclose(y, line_2[1][1], atol=1e-8) or \
-           min(line_1[0][1], line_1[1][1]) <= y <= max(line_1[0][1], line_1[1][1]):
-            print(f"Intersection found: {x:.2f} {y:.2f}")
-            return np.array([x, y])
-
-    raise ValueError('lines do not intersect within the line segment')
-
-def get_intersection(coord_1: np.array, coord_2: np.array, dimensions: np.array) -> tuple[tuple[float, float], tuple[float, float]]:
-    pbc_vec = pbc_vector(coord_1, coord_2, dimensions)
-    print(f"pbc_vec: {pbc_vec[0]:.2f} {pbc_vec[1]:.2f}")
-    box_lines = np.array([[[dimensions[0, 0], dimensions[0, 1]], [dimensions[1, 0], dimensions[0, 1]]],  # bottom
-                          [[dimensions[1, 0], dimensions[0, 1]], [dimensions[1, 0], dimensions[1, 1]]],  # right
-                          [[dimensions[1, 0], dimensions[1, 1]], [dimensions[0, 0], dimensions[1, 1]]],  # top
-                          [[dimensions[0, 0], dimensions[1, 1]], [dimensions[0, 0], dimensions[0, 1]]]]) # left
-    intersections = []
-    for i, line in enumerate(box_lines):
-        try:
-            intersection = line_intersection(np.array([coord_1, coord_1 + pbc_vec]), line)
-            intersections.append(intersection)
-        except ValueError:
-            intersections.append(None)
-    if not intersections:
-        raise ValueError("No intersection found.")
-    intersection_distances = [np.linalg.norm(intersection - coord_1) if intersection is not None else np.inf for intersection in intersections]
-    print(f"Intersection distances: bottom: {intersection_distances[0]:.2f}, right: {intersection_distances[1]:.2f}, top: {intersection_distances[2]:.2f}, left: {intersection_distances[3]:.2f}")
-    sorted_distances = sorted(intersection_distances)
-    # If the smallest two distances are equal, the intersection is at a corner
-    if np.isclose(sorted_distances[0], sorted_distances[1], atol=1e-8):
-        # Get the indices of the smallest two distances in the original list
-        indices = sorted(range(len(intersection_distances)), key=lambda i: intersection_distances[i])[:2]
-        # Sort the indices to ensure consistent ordering (bottom < right < top < left)
-        indices.sort()
-        if indices == [0, 1]:
-            print("Intersection is in bottom right corner")
-            return intersections[0], intersections[0] + np.array([-dimensions[1][0], dimensions[1][1]])
-        elif indices == [1, 2]:
-            print("Intersection is in top right corner")
-            return intersections[1], intersections[1] - np.array([dimensions[1][0], dimensions[1][1]])
-        elif indices == [2, 3]:
-            print("Intersection is in top left corner")
-            return intersections[2], intersections[2] + np.array([dimensions[1][0], -dimensions[1][1]])
-        else:  # indices == [0, 3]
-            print("Intersection is in bottom left corner")
-            return intersections[3], intersections[3] + np.array([dimensions[1][0], dimensions[1][1]])
-    else:
-        if intersection_distances.index(sorted_distances[0]) == 0:
-            print("Intersection is on bottom side")
-            return intersections[0], intersections[0] + np.array([0, dimensions[1][1]])
-        elif intersection_distances.index(sorted_distances[0]) == 1:
-            print("Intersection is on right side")
-            return intersections[1], intersections[1] - np.array([dimensions[1][0], 0])
-        elif intersection_distances.index(sorted_distances[0]) == 2:
-            print("Intersection is on top side")
-            return intersections[2], intersections[2] - np.array([0, dimensions[1][1]])
-        else:
-            print("Intersection is on left side")
-            return intersections[3], intersections[3] + np.array([dimensions[1][0], 0])
-
 
 def is_pbc_bond(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> bool:
     """
@@ -1009,37 +928,6 @@ class NetMCNode:
                     break
             counter += 1
         return walk
-
-    def get_polygons(self, dimensions: np.array) -> list[patches.Polygon]:
-        segments = []
-        segment = [self.ring_neighbours[-1].coord]
-        print(f"Added node: {self.ring_neighbours[-1].id} at {self.ring_neighbours[-1].coord}")
-        for i in range(0, len(self.ring_neighbours)):
-            print(f"Looking at node: {self.ring_neighbours[i].id} at {self.ring_neighbours[i].coord}")
-            if is_pbc_bond(self.ring_neighbours[i-1], self.ring_neighbours[i], dimensions):
-                print("Decided it's a PBC bond")
-                phantom_point_1, phantom_point_2 = get_intersection(self.ring_neighbours[i-1].coord, self.ring_neighbours[i].coord, dimensions)
-                print(f"Phantom points: {phantom_point_1 } {phantom_point_2}")
-                segment.append(phantom_point_1)
-                
-                if i != len(self.ring_neighbours) - 1:
-                    segments.append(segment)
-                    segment = [phantom_point_2, self.ring_neighbours[i].coord]
-                else:
-                    segments[0].append(phantom_point_2)
-            else:
-                print("Added node to segment")
-                segment.append(self.ring_neighbours[i].coord)
-
-        segments.append(segment)
-        polygons = []
-        for segment in segments:
-            if len(segment) > 0:
-                print(segment)
-                polygons.append(patches.Polygon([coord for coord in segment]))
-        return polygons
-
-
 
     def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
         for i in range(len(self.neighbours)):
