@@ -5,6 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Iterator
 import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde
+
+import matplotlib.colors as mcolors
+from  matplotlib.lines import Line2D
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
 
 import networkx as nx
 import numpy as np
@@ -29,6 +37,15 @@ class CouldNotBondUndercoordinatedNodesException(Exception):
     def __init__(self, message):
         self.message = message
         super().__init__(self.message)
+
+
+def angle_to_node(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> float:
+        """
+        Returns the angle between the x-axis and the vector from the node
+        to the given node in radians, range of -pi to pi.
+        """
+        periodic_vector = pbc_vector(node_1.coord, node_2.coord, dimensions)
+        return -np.arctan2(periodic_vector[1], periodic_vector[0])
 
 
 def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarray) -> float:
@@ -79,9 +96,7 @@ def get_aux_data(path: Path) -> tuple[np.ndarray, str]:
         aux_file.readline()
         geom_code = aux_file.readline().strip()
         xhi_yhi = aux_file.readline().strip().split()
-        xlo_ylo = aux_file.readline().strip().split()
-        dimensions = np.array([[float(xlo_ylo[0]), float(xlo_ylo[1])],
-                               [float(xhi_yhi[0]), float(xhi_yhi[1])]])
+    dimensions = np.array([[0, 0], [float(xhi_yhi[0]), float(xhi_yhi[1])]])
     return dimensions, geom_code
 
 
@@ -131,6 +146,87 @@ def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray)
     difference_vector = (difference_vector + half_dimension_ranges) % dimension_ranges - half_dimension_ranges
     return difference_vector
 
+def determinant(vector_1: np.array, vector_2: np.array) -> float:
+    return np.dot(vector_1[0], vector_2[1]) - np.dot(vector_1[1], vector_2[0])
+
+def line_intersection(line_1: np.array, line_2: np.array) -> np.array:
+    delta_x = np.array([line_1[0][0] - line_1[1][0], line_2[0][0] - line_2[1][0]])
+    delta_y = np.array([line_1[0][1] - line_1[1][1], line_2[0][1] - line_2[1][1]])
+
+    div = determinant(delta_x, delta_y)
+    if div == 0:
+       raise ValueError('lines do not intersect')
+
+    d1 = determinant(*line_1)
+    d2 = determinant(*line_2)
+    x = determinant(np.array([d1, d2]), delta_x) / div
+    y = determinant(np.array([d1, d2]), delta_y) / div
+    
+    # print(f"\nFinding intersection between lines described by:")
+    # print(f"Line 1: {line_1[0][0]:.2f} {line_1[0][1]:.2f} {line_1[1][0]:.2f} {line_1[1][1]:.2f}")
+    # print(f"Line 2: {line_2[0][0]:.2f} {line_2[0][1]:.2f} {line_2[1][0]:.2f} {line_2[1][1]:.2f}\n")
+
+    # Check if the intersection point is within the line segment
+    if np.isclose(x, line_2[0][0], atol=1e-8) or np.isclose(x, line_2[1][0], atol=1e-8) or \
+       min(line_1[0][0], line_1[1][0]) <= x <= max(line_1[0][0], line_1[1][0]):
+        if np.isclose(y, line_2[0][1], atol=1e-8) or np.isclose(y, line_2[1][1], atol=1e-8) or \
+           min(line_1[0][1], line_1[1][1]) <= y <= max(line_1[0][1], line_1[1][1]):
+            print(f"Intersection found: {x:.2f} {y:.2f}")
+            return np.array([x, y])
+
+    raise ValueError('lines do not intersect within the line segment')
+
+def get_intersection(coord_1: np.array, coord_2: np.array, dimensions: np.array) -> tuple[tuple[float, float], tuple[float, float]]:
+    pbc_vec = pbc_vector(coord_1, coord_2, dimensions)
+    print(f"pbc_vec: {pbc_vec[0]:.2f} {pbc_vec[1]:.2f}")
+    box_lines = np.array([[[dimensions[0, 0], dimensions[0, 1]], [dimensions[1, 0], dimensions[0, 1]]],  # bottom
+                          [[dimensions[1, 0], dimensions[0, 1]], [dimensions[1, 0], dimensions[1, 1]]],  # right
+                          [[dimensions[1, 0], dimensions[1, 1]], [dimensions[0, 0], dimensions[1, 1]]],  # top
+                          [[dimensions[0, 0], dimensions[1, 1]], [dimensions[0, 0], dimensions[0, 1]]]]) # left
+    intersections = []
+    for i, line in enumerate(box_lines):
+        try:
+            intersection = line_intersection(np.array([coord_1, coord_1 + pbc_vec]), line)
+            intersections.append(intersection)
+        except ValueError:
+            intersections.append(None)
+    if not intersections:
+        raise ValueError("No intersection found.")
+    intersection_distances = [np.linalg.norm(intersection - coord_1) if intersection is not None else np.inf for intersection in intersections]
+    print(f"Intersection distances: bottom: {intersection_distances[0]:.2f}, right: {intersection_distances[1]:.2f}, top: {intersection_distances[2]:.2f}, left: {intersection_distances[3]:.2f}")
+    sorted_distances = sorted(intersection_distances)
+    # If the smallest two distances are equal, the intersection is at a corner
+    if np.isclose(sorted_distances[0], sorted_distances[1], atol=1e-8):
+        # Get the indices of the smallest two distances in the original list
+        indices = sorted(range(len(intersection_distances)), key=lambda i: intersection_distances[i])[:2]
+        # Sort the indices to ensure consistent ordering (bottom < right < top < left)
+        indices.sort()
+        if indices == [0, 1]:
+            print("Intersection is in bottom right corner")
+            return intersections[0], intersections[0] + np.array([-dimensions[1][0], dimensions[1][1]])
+        elif indices == [1, 2]:
+            print("Intersection is in top right corner")
+            return intersections[1], intersections[1] - np.array([dimensions[1][0], dimensions[1][1]])
+        elif indices == [2, 3]:
+            print("Intersection is in top left corner")
+            return intersections[2], intersections[2] + np.array([dimensions[1][0], -dimensions[1][1]])
+        else:  # indices == [0, 3]
+            print("Intersection is in bottom left corner")
+            return intersections[3], intersections[3] + np.array([dimensions[1][0], dimensions[1][1]])
+    else:
+        if intersection_distances.index(sorted_distances[0]) == 0:
+            print("Intersection is on bottom side")
+            return intersections[0], intersections[0] + np.array([0, dimensions[1][1]])
+        elif intersection_distances.index(sorted_distances[0]) == 1:
+            print("Intersection is on right side")
+            return intersections[1], intersections[1] - np.array([dimensions[1][0], 0])
+        elif intersection_distances.index(sorted_distances[0]) == 2:
+            print("Intersection is on top side")
+            return intersections[2], intersections[2] - np.array([0, dimensions[1][1]])
+        else:
+            print("Intersection is on left side")
+            return intersections[3], intersections[3] + np.array([dimensions[1][0], 0])
+
 
 def is_pbc_bond(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> bool:
     """
@@ -168,7 +264,7 @@ class NetMCNetwork:
             print(f"Network has invalid type {self.type}")
             valid = False
         for node in self.nodes:
-            if not node.check():
+            if not node.check(self.dimensions):
                 valid = False
         for bond in self.bonds:
             if not bond.check():
@@ -269,7 +365,7 @@ class NetMCNetwork:
             aux_file.write(f"{self.max_connections:<10}{self.max_ring_connections:<10}\n")
             aux_file.write(f"{self.geom_code}\n")
             aux_file.write(f"{dimensions[1][0]:<20.6f}{dimensions[1][1]:<20.6f}\n")
-            aux_file.write(f"{dimensions[0][0]:<20.6f}{dimensions[0][1]:<20.6f}\n")
+            aux_file.write(f"{1 / dimensions[1][0]:<20.6f}{1 / dimensions[1][1]:<20.6f}\n")
 
     def export_coords(self, path: Path) -> None:
         coords = np.array([[node.x, node.y] for node in self.nodes])
@@ -400,8 +496,6 @@ class NetMCData:
             y, x = divmod(id, length)
             # Add neighbours to left and right
             ring_ring_neighbours = [(y * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 1]]
-
-
             if y % 2 == 0:
                 # Add dual neighbours to left and right (slightly below ring node)
                 ring_base_neighbours = [(2 * y * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
@@ -420,7 +514,6 @@ class NetMCData:
                 ring_base_neighbours = [(2 * y * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
                 # Add dual neighbours to left and right (slightly above ring node)
                 ring_base_neighbours += [((2 * y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [-1, 0]]
-                
                 # Add neighbours above to the left and right
                 ring_ring_neighbours += [((y + 1) * length + (id + offset) % length) % num_ring_nodes for offset in [-1, 0]]
                 # Add neighbours below to the left and right
@@ -454,9 +547,28 @@ class NetMCData:
         return netmc_data
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
-        self.dimensions = dimensions
+        self.dimensions = dimensions.copy()
         self.base_network.dimensions = dimensions.copy()
         self.ring_network.dimensions = dimensions.copy()
+        
+    def plot_radial_distribution(self) -> None:
+        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
+
+        # Calculate the KDE
+        kde = gaussian_kde(distances_from_centre)
+        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
+        density = kde(radii)
+
+        # Normalize by the area of the annulus
+        bin_width = radii[1] - radii[0]
+        areas = 2 * np.pi * radii * bin_width
+        density_normalized = density / areas
+
+        plt.plot(radii, density_normalized, label="Base")
+        plt.title("Radial distribution of nodes in the base network from the centre")
+        plt.xlabel("Distance from centre (Bohr radii)")
+        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
+        plt.show()
 
     def scale(self, scale_factor: float) -> None:
         self.dimensions *= scale_factor
@@ -548,10 +660,10 @@ class NetMCData:
         for node_1, node_2, node_3 in zip(ring_walk, ring_walk[1:] + ring_walk[:1], ring_walk[2:] + ring_walk[:2]):
             if node_1 in undercoordinated_nodes and node_2 in undercoordinated_nodes and node_3 in undercoordinated_nodes:
                 raise InvalidUndercoordinatedNodesException("There are three consecutive undercoordinated nodes in the ring walk.")
+        # Islands are two undercoordinated nodes that are bonded
         islands = []
         for i, node in enumerate(undercoordinated_nodes):
-            next_node = undercoordinated_nodes[(
-                i + 1) % len(undercoordinated_nodes)]
+            next_node = undercoordinated_nodes[(i + 1) % len(undercoordinated_nodes)]
             if next_node in node.neighbours:
                 islands.append([node, next_node])
         for i, island in enumerate(islands):
@@ -590,11 +702,9 @@ class NetMCData:
 
     @staticmethod
     def compare_networks(network_1: NetMCData, network_2: NetMCData) -> NetMCData:
-        network_1_strain = network_1.base_network.evaluate_strain(
-            ideal_bond_length=1, ideal_bond_angle=120)
-        network_2_strain = network_2.base_network.evaluate_strain(
-            ideal_bond_length=1, ideal_bond_angle=120)
-        print(f"Network 1 strain: {network_1_strain} Network 2 strain: {network_2_strain}")
+        network_1_strain = network_1.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
+        network_2_strain = network_2.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
+        print(f"Network 1 strain: {network_1_strain:.2f} Network 2 strain: {network_2_strain:.2f}")
         if network_1_strain < network_2_strain:
             return network_1
         if network_1_strain == network_2_strain:
@@ -622,11 +732,14 @@ class NetMCData:
             new_ring_1, new_ring_2, ring_to_remove = self.get_resulting_rings(selected_node, next_node)
             self.add_bond(selected_node, next_node)
             self.split_ring(new_ring_1, new_ring_2, ring_to_remove)
+        for node in self.base_network.nodes:
+            node.sort_neighbours_clockwise(node.neighbours, self.dimensions)
+        for ring_node in self.ring_network.nodes:
+            ring_node.sort_neighbours_clockwise(node.ring_neighbours, self.dimensions)
 
     def get_resulting_rings(self, node_1: NetMCNode, node_2: NetMCNode) -> tuple[NetMCNode, NetMCNode, NetMCNode]:
         try:
-            common_ring = find_common_elements(
-                [node_1.ring_neighbours, node_2.ring_neighbours])[0]
+            common_ring = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])[0]
         except IndexError:
             raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
         ring_walk = common_ring.get_ring_walk()
@@ -635,12 +748,10 @@ class NetMCData:
         # get base network nodes
         if index_1 < index_2:
             new_ring_node_1_ring_nodes = ring_walk[index_1:index_2 + 1]
-            new_ring_node_2_ring_nodes = ring_walk[index_2:] + \
-                ring_walk[:index_1 + 1]
+            new_ring_node_2_ring_nodes = ring_walk[index_2:] +  ring_walk[:index_1 + 1]
         else:
             new_ring_node_1_ring_nodes = ring_walk[index_2:index_1 + 1]
-            new_ring_node_2_ring_nodes = ring_walk[index_1:] + \
-                ring_walk[:index_2 + 1]
+            new_ring_node_2_ring_nodes = ring_walk[index_1:] + ring_walk[:index_2 + 1]
         # get ring network nodes
         new_ring_node_1_nodes = []
         for ring_node in new_ring_node_1_ring_nodes:
@@ -732,22 +843,74 @@ class NetMCData:
         node_sizes = [30 if data['source'] == 'base_network' else 10 for _, data in graph.nodes(data=True)]
         edge_widths = [2 if data['source'] == 'base_network' else 1 for _, _, data in graph.edges(data=True)]
         pos = nx.get_node_attributes(graph, "pos")
-        pos_labels = {node: (x + offset, y + offset)
-                      for node, (x, y) in pos.items()}
-        nx.draw(graph, pos, node_color=node_colors,
-                edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+        pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
+        nx.draw(graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
         plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
         plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
         plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
         plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
-                
-        if base_labels:
-            nx.draw_networkx_labels(graph, pos_labels, labels={
-                                    node.id: node.id for node in self.base_network.nodes}, font_size=7, font_color="gray")
-        if ring_labels:
-            nx.draw_networkx_labels(graph, pos_labels, labels={
-                                    node.id + id_shift: node.id for node in self.ring_network.nodes}, font_size=7, font_color="purple")
 
+        if base_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={node.id: node.id for node in self.base_network.nodes},
+                                    font_size=7, font_color="gray")
+        if ring_labels:
+            nx.draw_networkx_labels(graph, pos_labels, labels={node.id + id_shift: node.id for node in self.ring_network.nodes},
+                                    font_size=7, font_color="purple")
+
+    def draw_graph2(self, draw_dimensions: bool = False) -> None:
+        plt.axis("off")
+        patches = []
+        colors = []
+        min_ring_size, max_ring_size = self.get_ring_size_limits()
+        largest_ring_patch = None
+        lines = []
+
+        for ring_node in self.ring_network.nodes:
+            pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions) for base_node in ring_node.ring_neighbours])
+            polygon = Polygon(pbc_coords, closed=True)
+
+            # Check if this ring is the largest
+            if len(pbc_coords) == max_ring_size:
+                largest_ring_patch = polygon
+            else:
+                patches.append(polygon)
+                colors.append(len(pbc_coords))
+
+            # Store the lines for later plotting
+            for i in range(len(pbc_coords)):
+                line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]], 
+                            [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
+                lines.append(line)
+
+        # Create a PatchCollection from the list of patches
+        p = PatchCollection(patches, cmap='cividis', alpha=0.4)
+
+        # Set the colors of the patches based on the list of colors
+        p.set_array(np.array(colors))
+        p.set_clim([min_ring_size, max(colors)])  # Adjust the upper limit of the color range to the maximum color
+
+        plt.gca().add_collection(p)
+        plt.colorbar(p, orientation='vertical')
+
+        # Add the largest ring as a white patch
+        # if largest_ring_patch is not None:
+           #  plt.gca().add_patch(Polygon(largest_ring_patch.get_xy(), closed=True, color='white'))
+
+        # Add the lines to the plot
+        for line in lines:
+            plt.gca().add_line(line)
+
+        if draw_dimensions: 
+            plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
+            plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
+            plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
+            plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
+    
+    def get_ring_size_limits(self) -> tuple[int, int]:
+        max_ring_size = max([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
+        min_ring_size = min([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
+        return min_ring_size, max_ring_size
+    
     @property
     def xlo(self):
         return self.dimensions[0, 0]
@@ -795,29 +958,40 @@ class NetMCNode:
     ring_neighbours: list[NetMCNode] = field(default_factory=lambda: [])
     id: Optional[int] = None
 
-    def check(self) -> bool:
+    def check(self, dimensions: np.array) -> bool:
         valid = True
         if self.type not in ("base", "ring"):
             print(f"Node {self.id} has invalid type {self.type}")
             valid = False
         for neighbour in self.neighbours:
             if neighbour == self:
-                print(f"Node {self.id} ({self.type}) has itself as neighbour")
+                print(f"Node {self.id} {self.type} has itself as neighbour")
                 valid = False
             if self not in neighbour.neighbours:
-                print(f"Node {self.id} ({self.type}) has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
+                print(f"Node {self.id} {self.type} has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
                 valid = False
             if self.type != neighbour.type:
-                print(f"Node {self.id} ({self.type}) has neighbour {neighbour.id}, but neighbour has different type")
+                print(f"Node {self.id} {self.type} has neighbour {neighbour.id}, but neighbour has different type")
                 valid = False
         for ring_neighbour in self.ring_neighbours:
             if self not in ring_neighbour.ring_neighbours:
-                print(f"Node {self.id} ({self.type}) has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
+                print(f"Node {self.id} {self.type} has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
                 valid = False
             if self.type == ring_neighbour.type:
-                print(f"Node {self.id} ({self.type}) has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
+                print(f"Node {self.id} {self.type} has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
+                valid = False
+        for neighbour_list in [self.neighbours, self.ring_neighbours]:
+            sorted_neighbours = sorted(neighbour_list, key=lambda node: angle_to_node(self, node, dimensions))
+            if neighbour_list != sorted_neighbours:
+                print(f"Node {self.id} {self.type} neighbours are not in clockwise order")
                 valid = False
         return valid
+
+    def sort_neighbours_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
+        """
+        Sorts the given neighbours in clockwise order.
+        """
+        nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
 
     def get_ring_walk(self) -> list[NetMCNode]:
         """
@@ -836,36 +1010,53 @@ class NetMCNode:
             counter += 1
         return walk
 
+    def get_polygons(self, dimensions: np.array) -> list[patches.Polygon]:
+        segments = []
+        segment = [self.ring_neighbours[-1].coord]
+        print(f"Added node: {self.ring_neighbours[-1].id} at {self.ring_neighbours[-1].coord}")
+        for i in range(0, len(self.ring_neighbours)):
+            print(f"Looking at node: {self.ring_neighbours[i].id} at {self.ring_neighbours[i].coord}")
+            if is_pbc_bond(self.ring_neighbours[i-1], self.ring_neighbours[i], dimensions):
+                print("Decided it's a PBC bond")
+                phantom_point_1, phantom_point_2 = get_intersection(self.ring_neighbours[i-1].coord, self.ring_neighbours[i].coord, dimensions)
+                print(f"Phantom points: {phantom_point_1 } {phantom_point_2}")
+                segment.append(phantom_point_1)
+                
+                if i != len(self.ring_neighbours) - 1:
+                    segments.append(segment)
+                    segment = [phantom_point_2, self.ring_neighbours[i].coord]
+                else:
+                    segments[0].append(phantom_point_2)
+            else:
+                print("Added node to segment")
+                segment.append(self.ring_neighbours[i].coord)
+
+        segments.append(segment)
+        polygons = []
+        for segment in segments:
+            if len(segment) > 0:
+                print(segment)
+                polygons.append(patches.Polygon([coord for coord in segment]))
+        return polygons
+
+
+
     def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
         for i in range(len(self.neighbours)):
             node_1 = self.neighbours[i]
             node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
             yield (node_1, self, node_2)
 
-    def sort_nodes_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
-        """
-        Sorts the given nodes in clockwise order.
-        """
-        def angle_to_node(node):
-            """
-            Returns the angle between the x-axis and the vector from the node
-            to the given node in radians, range of -pi to pi.
-            """
-            periodic_vector = pbc_vector(self.coord, node.coord, dimensions)
-            return -np.arctan2(periodic_vector[1], periodic_vector[0])
-
-        nodes.sort(key=angle_to_node)
-
     def add_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
         self.neighbours.append(neighbour)
-        self.sort_nodes_clockwise(self.neighbours, dimensions)
+        self.sort_neighbours_clockwise(self.neighbours, dimensions)
 
     def delete_neighbour(self, neighbour: NetMCNode) -> None:
         self.neighbours.remove(neighbour)
 
     def add_ring_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
         self.ring_neighbours.append(neighbour)
-        self.sort_nodes_clockwise(self.ring_neighbours, dimensions)
+        self.sort_neighbours_clockwise(self.ring_neighbours, dimensions)
 
     def delete_ring_neighbour(self, neighbour: NetMCNode) -> None:
         self.ring_neighbours.remove(neighbour)
