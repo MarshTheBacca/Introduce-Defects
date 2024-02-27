@@ -1,4 +1,0 @@
-bond_style harmonic        
-bond_coeff 1 0.800 1.000  
-angle_style cosine/squared       
-angle_coeff 1 0.200 120   
