@@ -341,7 +341,6 @@ def main():
     output_path.mkdir(exist_ok=True)
     prefix = find_prefix(input_path)
     non_defect_netmc_data = NetMCData.from_files(input_path, prefix)
-    non_defect_netmc_data.zero_coords()
     plotter = GraphPlotter(non_defect_netmc_data, output_path)
     plotter.plot()
 
