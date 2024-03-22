@@ -7,9 +7,7 @@ from typing import Optional, Iterator
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
-import matplotlib.colors as mcolors
-from  matplotlib.lines import Line2D
-import matplotlib.patches as patches
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
@@ -40,12 +38,12 @@ class CouldNotBondUndercoordinatedNodesException(Exception):
 
 
 def angle_to_node(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> float:
-        """
-        Returns the angle between the x-axis and the vector from the node
-        to the given node in radians, range of -pi to pi.
-        """
-        periodic_vector = pbc_vector(node_1.coord, node_2.coord, dimensions)
-        return -np.arctan2(periodic_vector[1], periodic_vector[0])
+    """
+    Returns the angle between the x-axis and the vector from the node
+    to the given node in radians, range of -pi to pi.
+    """
+    periodic_vector = pbc_vector(node_1.coord, node_2.coord, dimensions)
+    return -np.arctan2(periodic_vector[1], periodic_vector[0])
 
 
 def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarray) -> float:
@@ -128,7 +126,7 @@ def rounded_even_sqrt(number: float) -> int:
     if number < 0:
         raise ValueError("Cannot take the square root of a negative number.")
     rounded_root = np.floor(np.sqrt(number))
-    if rounded_root % 2 ==0:
+    if rounded_root % 2 == 0:
         return int(rounded_root)
     return int(rounded_root - 1)
 
@@ -176,7 +174,6 @@ class NetMCNetwork:
             self.nodes.append(node)
             node.id = self.num_nodes - 1
 
-
     def check(self) -> bool:
         valid = True
         if self.type not in ("base", "ring"):
@@ -215,7 +212,7 @@ class NetMCNetwork:
     def get_nearest_node(self, point: np.array) -> tuple[NetMCNode, float]:
         distance, index = self.kdtree.query(point)
         return self.nodes[index], distance
-    
+
     def get_average_bond_length(self) -> float:
         return np.mean([bond.pbc_length(self.dimensions) for bond in self.bonds])
 
@@ -363,6 +360,7 @@ class NetMCData:
     @staticmethod
     def from_files(path: Path, prefix: str):
         dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
+        dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
         base_nodes = get_nodes(path.joinpath(f"{prefix}_A_crds.dat"), "base")
         ring_nodes = get_nodes(path.joinpath(f"{prefix}_B_crds.dat"), "ring")
         fill_neighbours(path.joinpath(f"{prefix}_A_net.dat"), base_nodes, base_nodes, dimensions)
@@ -380,7 +378,7 @@ class NetMCData:
         length = rounded_even_sqrt(num_rings)
         dimensions = np.array([[0, 0], [np.sqrt(3) * length, 1.5 * length]])
         netmc_data.set_dimensions(dimensions)
-        
+
         num_ring_nodes = length * length
         num_base_nodes = 2 * num_ring_nodes
         dy = 1.5  # Distance between rows of rings
@@ -388,7 +386,7 @@ class NetMCData:
         # Add ring nodes
         for y in range(length):
             for x in range(length):
-                ring_node_coord = np.array([np.sqrt(3) / 2 * (- (y % 2) + 2 * x + 1.5),  y * dy + 0.75])
+                ring_node_coord = np.array([np.sqrt(3) / 2 * (- (y % 2) + 2 * x + 1.5), y * dy + 0.75])
                 netmc_data.add_node(NetMCNode(ring_node_coord, "ring", [], []))
 
         # Add base nodes in two loops to get left-to-right, bottom-to-top ordering of IDs
@@ -463,13 +461,53 @@ class NetMCData:
                 base_base_neighbours += [((y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
             for neighbour in base_base_neighbours:
                 netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
+                netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
         return netmc_data
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
         self.dimensions = dimensions.copy()
+        self.dimensions = dimensions.copy()
         self.base_network.dimensions = dimensions.copy()
         self.ring_network.dimensions = dimensions.copy()
-        
+
+    def plot_radial_distribution(self) -> None:
+        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
+
+        # Calculate the KDE
+        kde = gaussian_kde(distances_from_centre)
+        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
+        density = kde(radii)
+
+        # Normalize by the area of the annulus
+        bin_width = radii[1] - radii[0]
+        areas = 2 * np.pi * radii * bin_width
+        density_normalized = density / areas
+
+        plt.plot(radii, density_normalized, label="Base")
+        plt.title("Radial distribution of nodes in the base network from the centre")
+        plt.xlabel("Distance from centre (Bohr radii)")
+        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
+        plt.show()
+
+    def plot_radial_distribution(self) -> None:
+        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
+
+        # Calculate the KDE
+        kde = gaussian_kde(distances_from_centre)
+        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
+        density = kde(radii)
+
+        # Normalize by the area of the annulus
+        bin_width = radii[1] - radii[0]
+        areas = 2 * np.pi * radii * bin_width
+        density_normalized = density / areas
+
+        plt.plot(radii, density_normalized, label="Base")
+        plt.title("Radial distribution of nodes in the base network from the centre")
+        plt.xlabel("Distance from centre (Bohr radii)")
+        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
+        plt.show()
+
     def plot_radial_distribution(self) -> None:
         distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
 
@@ -502,7 +540,6 @@ class NetMCData:
         if self.base_network.check() and self.ring_network.check():
             return True
         return False
-        
 
     def __eq__(self, other) -> bool:
         if isinstance(other, NetMCData):
@@ -667,7 +704,7 @@ class NetMCData:
         # get base network nodes
         if index_1 < index_2:
             new_ring_node_1_ring_nodes = ring_walk[index_1:index_2 + 1]
-            new_ring_node_2_ring_nodes = ring_walk[index_2:] +  ring_walk[:index_1 + 1]
+            new_ring_node_2_ring_nodes = ring_walk[index_2:] + ring_walk[:index_1 + 1]
         else:
             new_ring_node_1_ring_nodes = ring_walk[index_2:index_1 + 1]
             new_ring_node_2_ring_nodes = ring_walk[index_1:] + ring_walk[:index_2 + 1]
@@ -722,7 +759,7 @@ class NetMCData:
                    base_bonds: bool = True, ring_bonds: bool = False, base_ring_bonds: bool = False,
                    base_labels: bool = False, ring_labels: bool = False, offset: float = 0.2) -> None:
         graph = nx.Graph()
-        
+
         id_shift = 0
         if base_nodes:
             for node in self.base_network.nodes:
@@ -772,9 +809,12 @@ class NetMCData:
         if base_labels:
             nx.draw_networkx_labels(graph, pos_labels, labels={node.id: node.id for node in self.base_network.nodes},
                                     font_size=7, font_color="gray")
+            nx.draw_networkx_labels(graph, pos_labels, labels={node.id: node.id for node in self.base_network.nodes},
+                                    font_size=7, font_color="gray")
         if ring_labels:
             nx.draw_networkx_labels(graph, pos_labels, labels={node.id + id_shift: node.id for node in self.ring_network.nodes},
                                     font_size=7, font_color="purple")
+        plt.gca().set_aspect('equal', adjustable='box')
 
     def draw_graph2(self, draw_dimensions: bool = False) -> None:
         plt.axis("off")
@@ -797,8 +837,8 @@ class NetMCData:
 
             # Store the lines for later plotting
             for i in range(len(pbc_coords)):
-                line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]], 
-                            [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
+                line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]],
+                              [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
                 lines.append(line)
 
         # Create a PatchCollection from the list of patches
@@ -813,23 +853,25 @@ class NetMCData:
 
         # Add the largest ring as a white patch
         # if largest_ring_patch is not None:
-           #  plt.gca().add_patch(Polygon(largest_ring_patch.get_xy(), closed=True, color='white'))
+        #  plt.gca().add_patch(Polygon(largest_ring_patch.get_xy(), closed=True, color='white'))
 
         # Add the lines to the plot
         for line in lines:
             plt.gca().add_line(line)
 
-        if draw_dimensions: 
+        if draw_dimensions:
             plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
             plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
             plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
             plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
-    
+        plt.gca().set_aspect('equal', adjustable='box')
+        plt.gca().autoscale_view()
+
     def get_ring_size_limits(self) -> tuple[int, int]:
         max_ring_size = max([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
         min_ring_size = min([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
         return min_ring_size, max_ring_size
-    
+
     @property
     def xlo(self):
         return self.dimensions[0, 0]
@@ -905,6 +947,12 @@ class NetMCNode:
                 print(f"Node {self.id} {self.type} neighbours are not in clockwise order")
                 valid = False
         return valid
+
+    def sort_neighbours_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
+        """
+        Sorts the given neighbours in clockwise order.
+        """
+        nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
 
     def sort_neighbours_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
         """
