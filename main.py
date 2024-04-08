@@ -73,9 +73,24 @@ def select_network(path: Path, prompt: str) -> str | None:
     return network_names[option - 1]
 
 
-def save_netmc_data(netmc_data: NetMCData, output_path: Path) -> None:
+def generate_lammps_data(netmc_data: NetMCData, output_path: Path) -> None:
+    option = get_valid_int("Choose one of the following presets for the LAMMPS data file:\n"
+                           "1) Graphene\n2) Silicene\n3) Exit\n", 1, 3)
+    if option == 3:
+        return
+    if option == 1:
+        netmc_data.scale(2.683411)  # This is 1.42 angroms in bohr radii, the C-C bond length
+        lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, "C", 12, "molecular")
+        lammps_data.export(output_path.joinpath("C.data"))
+    elif option == 2:
+        lammps_data = LAMMPSData.from_netmc_network(netmc_data.base_network, "Si", 27.9769265, "molecular")
+        lammps_data.export(output_path.joinpath("Si.data"))
+
+
+def save_network(netmc_data: NetMCData, output_path: Path) -> None:
     """
     Asks the user if they would like to save the network, and if so, saves it to the given directory
+    Also creates a LAMMPS data file
     Args:
         netmc_data: NetMCData object to save
         output_path: directory to save the network to
@@ -215,7 +230,7 @@ def main():
                                                       chosen_network_name)
                     plotter = GraphPlotter(netmc_data, networks_path)
                     plotter.plot()
-                    save_netmc_data(plotter.netmc_data, networks_path)
+                    save_network(plotter.netmc_data, networks_path)
 
                 elif option == 2:
                     while True:
@@ -228,7 +243,7 @@ def main():
                         netmc_data = NetMCData.gen_hexagonal(num_rings)
                         plotter = GraphPlotter(netmc_data, networks_path)
                         plotter.plot()
-                        save_netmc_data(plotter.netmc_data, networks_path)
+                        save_network(plotter.netmc_data, networks_path)
                 elif option == 3:
                     break
         elif option == 2:
