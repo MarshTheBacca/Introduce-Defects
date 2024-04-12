@@ -3,20 +3,20 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Iterator
-import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde
+from typing import Iterator, Optional
 
-from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
-from matplotlib.collections import PatchCollection
-
 import networkx as nx
 import numpy as np
+from matplotlib.collections import PatchCollection
+from matplotlib.lines import Line2D
+from matplotlib.patches import Polygon
+from matplotlib.ticker import MaxNLocator
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy.spatial import KDTree
+from scipy.stats import gaussian_kde
 
-NETWORK_TYPE_MAP = {"base": "A", "ring": "B"}
+NETWORK_TYPE_MAP = {"base": "base_network", "ring": "dual_network"}
 
 
 class InvalidNetworkException(Exception):
@@ -37,7 +37,7 @@ class CouldNotBondUndercoordinatedNodesException(Exception):
         super().__init__(self.message)
 
 
-def angle_to_node(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> float:
+def angle_to_node(node_1: BSSNode, node_2: BSSNode, dimensions: np.array) -> float:
     """
     Returns the angle between the x-axis and the vector from the node
     to the given node in radians, range of -pi to pi.
@@ -55,24 +55,26 @@ def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarra
     dot_product = np.dot(vector1, vector2)
     magnitude1 = np.linalg.norm(vector1)
     magnitude2 = np.linalg.norm(vector2)
-    angle = np.arccos(dot_product / (magnitude1 * magnitude2))
+    # Clamp the value to the range [-1, 1] to avoid RuntimeWarning from floating point errors
+    dot_product_over_magnitudes = np.clip(dot_product / (magnitude1 * magnitude2), -1.0, 1.0)
+    angle = np.arccos(dot_product_over_magnitudes)
     angle = np.degrees(angle)
     # Return the acute angle
     return min(angle, 180 - angle)
 
 
-def get_nodes(path: Path, network_type: str) -> list[NetMCNode]:
+def get_nodes(path: Path, network_type: str) -> list[BSSNode]:
     """
-    Read a file containing node coordinates and return a list of NetMCNode objects.
+    Read a file containing node coordinates and return a list of BSSNode objects.
     """
     if network_type not in ("base", "ring"):
         raise ValueError("Invalid network type {network_type}")
     coords = np.genfromtxt(path)
-    nodes = [NetMCNode(coord=coord, neighbours=[], ring_neighbours=[], id=id, type=network_type) for id, coord in enumerate(coords)]
+    nodes = [BSSNode(coord=coord, neighbours=[], ring_neighbours=[], id=id, type=network_type) for id, coord in enumerate(coords)]
     return nodes
 
 
-def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: list[NetMCNode], dimensions: np.array) -> None:
+def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: list[BSSNode], dimensions: np.array) -> None:
     """
     Read a file containing node connections and add the connections to the selected nodes.
     """
@@ -88,14 +90,21 @@ def fill_neighbours(path: Path, selected_nodes: list[NetMCNode], bonded_nodes: l
                     node_1.add_ring_neighbour(node_2, dimensions)
 
 
-def get_aux_data(path: Path) -> tuple[np.ndarray, str]:
-    with open(path, "r") as aux_file:
-        aux_file.readline()
-        aux_file.readline()
-        geom_code = aux_file.readline().strip()
-        xhi_yhi = aux_file.readline().strip().split()
-    dimensions = np.array([[0, 0], [float(xhi_yhi[0]), float(xhi_yhi[1])]])
-    return dimensions, geom_code
+def get_info_data(path: Path) -> np.ndarray:
+    with open(path, "r") as info_file:
+        info_file.readline()
+        xhi = info_file.readline().strip().split()[1]
+        yhi = info_file.readline().strip().split()[1]
+    dimensions = np.array([[0, 0], [float(xhi), float(yhi)]])
+    return dimensions
+
+
+def get_fixed_rings(path: Path) -> set[int]:
+    try:
+        with open(path, "r") as fixed_rings_file:
+            return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
+    except FileNotFoundError:
+        return set()
 
 
 def settify(iterable: list) -> list:
@@ -145,7 +154,7 @@ def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray)
     return difference_vector
 
 
-def is_pbc_bond(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> bool:
+def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.array) -> bool:
     """
     Identifies bonds that cross the periodic boundary. So if the length of the bond is 
     more than 10% longer than the distance between the two nodes with periodic boundary conditions,
@@ -157,13 +166,12 @@ def is_pbc_bond(node_1: NetMCNode, node_2: NetMCNode, dimensions: np.array) -> b
 
 
 @dataclass
-class NetMCNetwork:
-    nodes: list[NetMCNode] = field(default_factory=lambda: [])
+class BSSNetwork:
+    nodes: list[BSSNode] = field(default_factory=lambda: [])
     type: str = "base"
     dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
-    geom_code: str = "2DE"
 
-    def delete_node(self, node: NetMCNode) -> None:
+    def delete_node(self, node: BSSNode) -> None:
         if node.type == self.type:
             self.nodes.remove(node)
             for i, node in enumerate(self.nodes):
@@ -209,7 +217,7 @@ class NetMCNetwork:
             node.scale(scale_factor)
         self.dimensions *= scale_factor
 
-    def get_nearest_node(self, point: np.array) -> tuple[NetMCNode, float]:
+    def get_nearest_node(self, point: np.array) -> tuple[BSSNode, float]:
         distance, index = self.kdtree.query(point)
         return self.nodes[index], distance
 
@@ -221,24 +229,24 @@ class NetMCNetwork:
         return KDTree(np.array([[node.x, node.y] for node in self.nodes]))
 
     @property
-    def bonds(self) -> list[NetMCBond]:
+    def bonds(self) -> list[BSSBond]:
         """
         Computationally expensive, do not use regularly.
         """
         bonds = []
         for node in self.nodes:
             for neighbour in node.neighbours:
-                bond = NetMCBond(node, neighbour)
+                bond = BSSBond(node, neighbour)
                 if bond not in bonds:
                     bonds.append(bond)
         return bonds
 
     @property
-    def ring_bonds(self) -> list[NetMCBond]:
+    def ring_bonds(self) -> list[BSSBond]:
         bonds = []
         for node in self.nodes:
             for neighbour in node.ring_neighbours:
-                bonds.append(NetMCBond(node, neighbour))
+                bonds.append(BSSBond(node, neighbour))
         return bonds
 
     @property
@@ -251,7 +259,7 @@ class NetMCNetwork:
                 graph.add_edge(bond.node_1.id, bond.node_2.id)
         return graph
 
-    def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
+    def get_angles(self) -> Iterator[tuple[BSSNode, BSSNode, BSSNode]]:
         for node in self.nodes:
             for angle in node.get_angles():
                 yield angle
@@ -269,19 +277,17 @@ class NetMCNetwork:
             angle_strain += angle_deviation ** 2
         return bond_length_strain + angle_strain
 
-    def export(self, dimensions: np.ndarray, path: Path, prefix: str) -> None:
-        self.export_aux(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_aux.dat"), dimensions)
-        self.export_coords(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_crds.dat"))
-        self.export_base_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_net.dat"))
-        self.export_ring_bonds(path.joinpath(f"{prefix}_{NETWORK_TYPE_MAP[self.type]}_dual.dat"))
+    def export(self, dimensions: np.ndarray, path: Path) -> None:
+        self.export_info(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_info.txt"), dimensions)
+        self.export_coords(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_coords.txt"))
+        self.export_base_bonds(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_connections.txt"))
+        self.export_ring_bonds(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_dual_connections.txt"))
 
-    def export_aux(self, path: Path, dimensions: np.ndarray) -> None:
-        with open(path, "w") as aux_file:
-            aux_file.write(f"{self.num_nodes}\n")
-            aux_file.write(f"{self.max_connections:<10}{self.max_ring_connections:<10}\n")
-            aux_file.write(f"{self.geom_code}\n")
-            aux_file.write(f"{dimensions[1][0]:<20.6f}{dimensions[1][1]:<20.6f}\n")
-            aux_file.write(f"{1 / dimensions[1][0]:<20.6f}{1 / dimensions[1][1]:<20.6f}\n")
+    def export_info(self, path: Path, dimensions: np.ndarray) -> None:
+        with open(path, "w") as info_file:
+            info_file.write(f"Number of nodes: {self.num_nodes}\n")
+            info_file.write(f"xhi: {dimensions[1][0]}\n")
+            info_file.write(f"yhi: {dimensions[1][1]}\n")
 
     def export_coords(self, path: Path) -> None:
         coords = np.array([[node.x, node.y] for node in self.nodes])
@@ -337,47 +343,46 @@ class NetMCNetwork:
         return max([node.y for node in self.nodes])
 
     def __eq__(self, other):
-        if isinstance(other, NetMCNetwork):
+        if isinstance(other, BSSNetwork):
             return (self.nodes == other.nodes and
                     self.type == other.type and
-                    self.dimensions == other.dimensions and
-                    self.geom_code == other.geom_code)
+                    self.dimensions == other.dimensions)
         return False
 
     def __repr__(self) -> str:
-        string = f"NetMCNetwork of type {self.type} with {self.num_nodes} nodes: \n"
+        string = f"BSSNetwork of type {self.type} with {self.num_nodes} nodes: \n"
         for node in self.nodes:
             string += f"{node}\n"
         return string
 
 
 @dataclass
-class NetMCData:
-    base_network: NetMCNetwork = field(default_factory=lambda: NetMCNetwork([], "base", np.array([[0, 0], [1, 1]])))
-    ring_network: NetMCNetwork = field(default_factory=lambda: NetMCNetwork([], "ring", np.array([[0, 0], [1, 1]])))
+class BSSData:
+    base_network: BSSNetwork = field(default_factory=lambda: BSSNetwork([], "base", np.array([[0, 0], [1, 1]])))
+    ring_network: BSSNetwork = field(default_factory=lambda: BSSNetwork([], "ring", np.array([[0, 0], [1, 1]])))
     dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
+    fixed_rings: set[int] = field(default_factory=lambda: {})
 
     @staticmethod
-    def from_files(path: Path, prefix: str):
-        dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
-        dimensions, base_geom_code = get_aux_data(path.joinpath(f"{prefix}_A_aux.dat"))
-        base_nodes = get_nodes(path.joinpath(f"{prefix}_A_crds.dat"), "base")
-        ring_nodes = get_nodes(path.joinpath(f"{prefix}_B_crds.dat"), "ring")
-        fill_neighbours(path.joinpath(f"{prefix}_A_net.dat"), base_nodes, base_nodes, dimensions)
-        fill_neighbours(path.joinpath(f"{prefix}_B_net.dat"), ring_nodes, ring_nodes, dimensions)
-        fill_neighbours(path.joinpath(f"{prefix}_A_dual.dat"), base_nodes, ring_nodes, dimensions)
-        fill_neighbours(path.joinpath(f"{prefix}_B_dual.dat"), ring_nodes, base_nodes, dimensions)
-        _, ring_geom_code = get_aux_data(path.joinpath(f"{prefix}_B_aux.dat"))
-        base_network = NetMCNetwork(base_nodes, "base", dimensions, base_geom_code)
-        ring_network = NetMCNetwork(ring_nodes, "ring", dimensions, ring_geom_code)
-        return NetMCData(base_network, ring_network, dimensions)
+    def from_files(path: Path):
+        dimensions = get_info_data(path.joinpath("base_network_info.txt"))
+        base_nodes = get_nodes(path.joinpath("base_network_coords.txt"), "base")
+        ring_nodes = get_nodes(path.joinpath("dual_network_coords.txt"), "ring")
+        fill_neighbours(path.joinpath("base_network_connections.txt"), base_nodes, base_nodes, dimensions)
+        fill_neighbours(path.joinpath("dual_network_connections.txt"), ring_nodes, ring_nodes, dimensions)
+        fill_neighbours(path.joinpath("base_network_dual_connections.txt"), base_nodes, ring_nodes, dimensions)
+        fill_neighbours(path.joinpath("dual_network_dual_connections.txt"), ring_nodes, base_nodes, dimensions)
+        fixed_rings = get_fixed_rings(path.joinpath("fixed_rings.txt"))
+        base_network = BSSNetwork(base_nodes, "base", dimensions)
+        ring_network = BSSNetwork(ring_nodes, "ring", dimensions)
+        return BSSData(base_network, ring_network, dimensions, fixed_rings)
 
     @staticmethod
-    def gen_hexagonal(num_rings: int) -> NetMCData:
-        netmc_data = NetMCData()
+    def gen_hexagonal(num_rings: int) -> BSSData:
+        bss_data = BSSData()
         length = rounded_even_sqrt(num_rings)
         dimensions = np.array([[0, 0], [np.sqrt(3) * length, 1.5 * length]])
-        netmc_data.set_dimensions(dimensions)
+        bss_data.set_dimensions(dimensions)
 
         num_ring_nodes = length * length
         num_base_nodes = 2 * num_ring_nodes
@@ -387,26 +392,26 @@ class NetMCData:
         for y in range(length):
             for x in range(length):
                 ring_node_coord = np.array([np.sqrt(3) / 2 * (- (y % 2) + 2 * x + 1.5), y * dy + 0.75])
-                netmc_data.add_node(NetMCNode(ring_node_coord, "ring", [], []))
+                bss_data.add_node(BSSNode(ring_node_coord, "ring", [], []))
 
         # Add base nodes in two loops to get left-to-right, bottom-to-top ordering of IDs
         for y in range(length):
             # Add lower base nodes
             for x in range(length):
-                node = netmc_data.ring_network.nodes[y * length + x]
+                node = bss_data.ring_network.nodes[y * length + x]
                 if y % 2 == 0:
                     base_node_coord = node.coord + np.array([-np.sqrt(3) / 2, -1 / 2])
                 else:
                     base_node_coord = node.coord + np.array([np.sqrt(3) / 2, -1 / 2])
-                netmc_data.add_node(NetMCNode(base_node_coord, "base", [], []))
+                bss_data.add_node(BSSNode(base_node_coord, "base", [], []))
             # Add upper base nodes
             for x in range(length):
-                node = netmc_data.ring_network.nodes[y * length + x]
+                node = bss_data.ring_network.nodes[y * length + x]
                 if y % 2 == 0:
                     base_node_coord = node.coord + np.array([-np.sqrt(3) / 2, 1 / 2])
                 else:
                     base_node_coord = node.coord + np.array([np.sqrt(3) / 2, 1 / 2])
-                netmc_data.add_node(NetMCNode(base_node_coord, "base", [], []))
+                bss_data.add_node(BSSNode(base_node_coord, "base", [], []))
 
         # Add connections
         for id in range(num_ring_nodes):
@@ -440,10 +445,10 @@ class NetMCData:
                 # Add dual neighbour below
                 ring_base_neighbours += [((2 * y - 1) * length + (id) % length) % num_base_nodes]
             for neighbour in ring_ring_neighbours:
-                netmc_data.ring_network.nodes[id].add_neighbour(netmc_data.ring_network.nodes[neighbour], dimensions)
+                bss_data.ring_network.nodes[id].add_neighbour(bss_data.ring_network.nodes[neighbour], dimensions)
             for neighbour in ring_base_neighbours:
-                netmc_data.ring_network.nodes[id].add_ring_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
-                netmc_data.base_network.nodes[neighbour].add_ring_neighbour(netmc_data.ring_network.nodes[id], dimensions)
+                bss_data.ring_network.nodes[id].add_ring_neighbour(bss_data.base_network.nodes[neighbour], dimensions)
+                bss_data.base_network.nodes[neighbour].add_ring_neighbour(bss_data.ring_network.nodes[id], dimensions)
         for id in range(num_base_nodes):
             y, x = divmod(id, length)
             # Add neighbours to left and right
@@ -460,9 +465,8 @@ class NetMCData:
                 base_base_neighbours = [((y - 1) * length + (id) % length) % num_base_nodes]
                 base_base_neighbours += [((y + 1) * length + (id + offset) % length) % num_base_nodes for offset in [0, 1]]
             for neighbour in base_base_neighbours:
-                netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
-                netmc_data.base_network.nodes[id].add_neighbour(netmc_data.base_network.nodes[neighbour], dimensions)
-        return netmc_data
+                bss_data.base_network.nodes[id].add_neighbour(bss_data.base_network.nodes[neighbour], dimensions)
+        return bss_data
 
     def set_dimensions(self, dimensions: np.ndarray) -> None:
         self.dimensions = dimensions.copy()
@@ -489,52 +493,20 @@ class NetMCData:
         plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
         plt.show()
 
-    def plot_radial_distribution(self) -> None:
-        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
-
-        # Calculate the KDE
-        kde = gaussian_kde(distances_from_centre)
-        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
-        density = kde(radii)
-
-        # Normalize by the area of the annulus
-        bin_width = radii[1] - radii[0]
-        areas = 2 * np.pi * radii * bin_width
-        density_normalized = density / areas
-
-        plt.plot(radii, density_normalized, label="Base")
-        plt.title("Radial distribution of nodes in the base network from the centre")
-        plt.xlabel("Distance from centre (Bohr radii)")
-        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
-        plt.show()
-
-    def plot_radial_distribution(self) -> None:
-        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
-
-        # Calculate the KDE
-        kde = gaussian_kde(distances_from_centre)
-        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
-        density = kde(radii)
-
-        # Normalize by the area of the annulus
-        bin_width = radii[1] - radii[0]
-        areas = 2 * np.pi * radii * bin_width
-        density_normalized = density / areas
-
-        plt.plot(radii, density_normalized, label="Base")
-        plt.title("Radial distribution of nodes in the base network from the centre")
-        plt.xlabel("Distance from centre (Bohr radii)")
-        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
-        plt.show()
-
     def scale(self, scale_factor: float) -> None:
         self.dimensions *= scale_factor
         self.base_network.scale(scale_factor)
         self.ring_network.scale(scale_factor)
 
-    def export(self, path: Path, prefix: str) -> None:
-        self.base_network.export(self.dimensions, path, prefix)
-        self.ring_network.export(self.dimensions, path, prefix)
+    def export(self, path: Path) -> None:
+        self.base_network.export(self.dimensions, path)
+        self.ring_network.export(self.dimensions, path)
+        self.export_fixed_rings(path.joinpath("fixed_rings.txt"))
+
+    def export_fixed_rings(self, path: Path) -> None:
+        with open(path, "w") as file:
+            for ring in self.fixed_rings:
+                file.write(f"{ring}\n")
 
     def check(self) -> bool:
         if self.base_network.check() and self.ring_network.check():
@@ -542,7 +514,7 @@ class NetMCData:
         return False
 
     def __eq__(self, other) -> bool:
-        if isinstance(other, NetMCData):
+        if isinstance(other, BSSData):
             return (self.base_network == other.base_network and
                     self.ring_network == other.ring_network)
         return False
@@ -557,7 +529,7 @@ class NetMCData:
         self.base_network.translate(translation_vector)
         self.ring_network.translate(translation_vector)
 
-    def delete_node(self, node: NetMCNode) -> None:
+    def delete_node(self, node: BSSNode) -> None:
         for neighbour in node.neighbours:
             neighbour.delete_neighbour(node)
         for ring_neighbour in node.ring_neighbours:
@@ -565,7 +537,7 @@ class NetMCData:
         self.base_network.delete_node(node)
         self.ring_network.delete_node(node)
 
-    def add_node(self, node: NetMCNode) -> None:
+    def add_node(self, node: BSSNode) -> None:
         self.base_network.add_node(node)
         self.ring_network.add_node(node)
         for neighbour in node.neighbours:
@@ -573,7 +545,7 @@ class NetMCData:
         for ring_neighbour in node.ring_neighbours:
             ring_neighbour.add_ring_neighbour(node, self.dimensions)
 
-    def delete_node_and_merge_rings(self, node: NetMCNode) -> None:
+    def delete_node_and_merge_rings(self, node: BSSNode) -> None:
         rings_to_merge = node.ring_neighbours.copy()
         # I have to use settify instead of set() because the nodes are not hashable
         all_neighbours = settify(
@@ -582,14 +554,14 @@ class NetMCData:
             [neighbour for node_to_merge in rings_to_merge for neighbour in node_to_merge.ring_neighbours])
         new_coord = np.mean(
             [ring_neighbour.coord for ring_neighbour in all_ring_neighbours], axis=0)
-        new_node = NetMCNode(
+        new_node = BSSNode(
             new_coord, rings_to_merge[0].type, all_neighbours, all_ring_neighbours)
         self.add_node(new_node)
         for node_to_merge in rings_to_merge:
             self.delete_node(node_to_merge)
         self.delete_node(node)
 
-    def add_bond(self, node_1: NetMCNode, node_2: NetMCNode) -> None:
+    def add_bond(self, node_1: BSSNode, node_2: BSSNode) -> None:
         if node_1.type == "base" and node_1 not in self.base_network.nodes:
             raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the base network")
         if node_2.type == "base" and node_2 not in self.base_network.nodes:
@@ -601,15 +573,11 @@ class NetMCData:
         node_1.add_neighbour(node_2, self.dimensions)
         node_2.add_neighbour(node_1, self.dimensions)
 
-    def get_undrecoordinated_nodes(self, network: NetMCNetwork, target_coordination: int) -> list[NetMCNode]:
-        undercoordinated_nodes = []
-        for node in network.nodes:
-            if node.num_neighbours < target_coordination:
-                undercoordinated_nodes.append(node)
-        return undercoordinated_nodes
+    def get_undrecoordinated_nodes(self, network: BSSNetwork, target_coordination: int) -> list[BSSNode]:
+        return [node for node in network.nodes if node.num_neighbours < target_coordination]
 
     @staticmethod
-    def check_undercoordinated(undercoordinated_nodes: list[NetMCNode], ring_walk: list[NetMCNode]) -> None:
+    def check_undercoordinated(undercoordinated_nodes: list[BSSNode], ring_walk: list[BSSNode]) -> None:
         if len(undercoordinated_nodes) % 2 != 0:
             raise InvalidUndercoordinatedNodesException("Number of undercoordinated nodes is odd, so cannot bond them.")
         # Check there are no three consecutive undercoordinated nodes in the ring walk
@@ -631,9 +599,8 @@ class NetMCData:
                 raise InvalidUndercoordinatedNodesException("There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.")
 
     @staticmethod
-    def arrange_undercoordinated(undercoordinated_nodes: list[NetMCNode]) -> tuple[list[NetMCNode], list[NetMCNode]]:
-        common_rings = find_common_elements(
-            [node.ring_neighbours for node in undercoordinated_nodes])
+    def arrange_undercoordinated(undercoordinated_nodes: list[BSSNode]) -> tuple[list[BSSNode], list[BSSNode]]:
+        common_rings = find_common_elements([node.ring_neighbours for node in undercoordinated_nodes])
         if len(common_rings) != 1:
             raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
         common_ring = common_rings[0]
@@ -642,9 +609,9 @@ class NetMCData:
         return undercoordinated_nodes, ring_walk
 
     @staticmethod
-    def bond_undercoordinated_nodes(netmc_data: NetMCData) -> NetMCData:
-        potential_network_1 = copy.deepcopy(netmc_data)
-        potential_network_2 = copy.deepcopy(netmc_data)
+    def bond_undercoordinated_nodes(bss_data: BSSData) -> BSSData:
+        potential_network_1 = copy.deepcopy(bss_data)
+        potential_network_2 = copy.deepcopy(bss_data)
         potential_network_1.flip_flop(direction=1)
         potential_network_2.flip_flop(direction=-1)
         if potential_network_1.flopped and potential_network_2.flopped:
@@ -654,10 +621,10 @@ class NetMCData:
         elif potential_network_2.flopped:
             return potential_network_1
         else:
-            return NetMCData.compare_networks(potential_network_1, potential_network_2)
+            return BSSData.compare_networks(potential_network_1, potential_network_2)
 
     @staticmethod
-    def compare_networks(network_1: NetMCData, network_2: NetMCData) -> NetMCData:
+    def compare_networks(network_1: BSSData, network_2: BSSData) -> BSSData:
         network_1_strain = network_1.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
         network_2_strain = network_2.base_network.evaluate_strain(ideal_bond_length=1, ideal_bond_angle=120)
         print(f"Network 1 strain: {network_1_strain:.2f} Network 2 strain: {network_2_strain:.2f}")
@@ -693,7 +660,7 @@ class NetMCData:
         for ring_node in self.ring_network.nodes:
             ring_node.sort_neighbours_clockwise(node.ring_neighbours, self.dimensions)
 
-    def get_resulting_rings(self, node_1: NetMCNode, node_2: NetMCNode) -> tuple[NetMCNode, NetMCNode, NetMCNode]:
+    def get_resulting_rings(self, node_1: BSSNode, node_2: BSSNode) -> tuple[BSSNode, BSSNode, BSSNode]:
         try:
             common_ring = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])[0]
         except IndexError:
@@ -719,13 +686,13 @@ class NetMCData:
             for neighbour in ring_node.ring_neighbours:
                 if neighbour not in new_ring_node_2_nodes:
                     new_ring_node_2_nodes.append(neighbour)
-        new_ring_node_1 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_1_ring_nodes], axis=0),
-                                    "ring", new_ring_node_1_nodes, new_ring_node_1_ring_nodes)
-        new_ring_node_2 = NetMCNode(np.mean([ring_node.coord for ring_node in new_ring_node_2_ring_nodes], axis=0),
-                                    "ring", new_ring_node_2_nodes, new_ring_node_2_ring_nodes)
+        new_ring_node_1 = BSSNode(np.mean([ring_node.coord for ring_node in new_ring_node_1_ring_nodes], axis=0),
+                                  "ring", new_ring_node_1_nodes, new_ring_node_1_ring_nodes)
+        new_ring_node_2 = BSSNode(np.mean([ring_node.coord for ring_node in new_ring_node_2_ring_nodes], axis=0),
+                                  "ring", new_ring_node_2_nodes, new_ring_node_2_ring_nodes)
         return new_ring_node_1, new_ring_node_2, common_ring
 
-    def split_ring(self, new_ring_node_1: NetMCNode, new_ring_node_2: NetMCNode, ring_to_remove: NetMCNode) -> None:
+    def split_ring(self, new_ring_node_1: BSSNode, new_ring_node_2: BSSNode, ring_to_remove: BSSNode) -> None:
         self.add_node(new_ring_node_1)
         self.add_node(new_ring_node_2)
         self.delete_node(ring_to_remove)
@@ -787,20 +754,20 @@ class NetMCData:
                     if not is_pbc_bond(node, neighbour, self.dimensions):
                         graph.add_edge(node.id + id_shift, neighbour.id, source='base_ring_bonds')
 
-        node_colors = ['red' if data['source'] == 'base_network' else 'blue' for _, data in graph.nodes(data=True)]
-        edge_colors = []
+        node_colours = ['red' if data['source'] == 'base_network' else 'blue' for _, data in graph.nodes(data=True)]
+        edge_colours = []
         for _, _, data in graph.edges(data=True):
             if data['source'] == 'base_network':
-                edge_colors.append('black')
+                edge_colours.append('black')
             elif data['source'] == 'ring_network':
-                edge_colors.append('green')
+                edge_colours.append('green')
             else:
-                edge_colors.append('blue')
+                edge_colours.append('blue')
         node_sizes = [30 if data['source'] == 'base_network' else 10 for _, data in graph.nodes(data=True)]
         edge_widths = [2 if data['source'] == 'base_network' else 1 for _, _, data in graph.edges(data=True)]
         pos = nx.get_node_attributes(graph, "pos")
         pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
-        nx.draw(graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes, width=edge_widths)
+        nx.draw(graph, pos, node_color=node_colours, edge_color=edge_colours, node_size=node_sizes, width=edge_widths)
         plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
         plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
         plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
@@ -816,56 +783,89 @@ class NetMCData:
                                     font_size=7, font_color="purple")
         plt.gca().set_aspect('equal', adjustable='box')
 
-    def draw_graph2(self, draw_dimensions: bool = False) -> None:
-        plt.axis("off")
-        patches = []
-        colors = []
-        min_ring_size, max_ring_size = self.get_ring_size_limits()
-        largest_ring_patch = None
-        lines = []
+    def draw_graph_pretty(self, draw_dimensions: bool = False, threshold_size: int = 10) -> None:
+        if not self.ring_network.nodes:
+            print("No nodes to draw.")
+            return
 
+        plt.axis("off")
+        ax = plt.gca()
+        patches = []
+        colours = []
+        lines = []
+        white_patches = []
+        red_patches = []
         for ring_node in self.ring_network.nodes:
             pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions) for base_node in ring_node.ring_neighbours])
             polygon = Polygon(pbc_coords, closed=True)
-
-            # Check if this ring is the largest
-            if len(pbc_coords) == max_ring_size:
-                largest_ring_patch = polygon
+            if ring_node.id in self.fixed_rings:
+                # Fixed rings are coloured red
+                red_patches.append(polygon)
+            elif len(pbc_coords) >= threshold_size:
+                # Rings that are larger than the given threshhold are coloured white
+                white_patches.append(polygon)
             else:
                 patches.append(polygon)
-                colors.append(len(pbc_coords))
-
-            # Store the lines for later plotting
+                colours.append(len(pbc_coords))
             for i in range(len(pbc_coords)):
                 line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]],
                               [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
                 lines.append(line)
 
         # Create a PatchCollection from the list of patches
-        p = PatchCollection(patches, cmap='cividis', alpha=0.4)
+        patch_collection = PatchCollection(patches, cmap='cividis', alpha=0.4)
 
-        # Set the colors of the patches based on the list of colors
-        p.set_array(np.array(colors))
-        p.set_clim([min_ring_size, max(colors)])  # Adjust the upper limit of the color range to the maximum color
+        # Set the colours of the patches based on the list of colours
+        patch_collection.set_array(np.array(colours))
+        ax.add_collection(patch_collection)
 
-        plt.gca().add_collection(p)
-        plt.colorbar(p, orientation='vertical')
+        # Add the red patches to the plot
+        for red_patch in red_patches:
+            ax.add_patch(Polygon(red_patch.get_xy(), closed=True, color='red'))
 
-        # Add the largest ring as a white patch
-        # if largest_ring_patch is not None:
-        #  plt.gca().add_patch(Polygon(largest_ring_patch.get_xy(), closed=True, color='white'))
-
+        # Add the white patches to the plot
+        for white_patch in white_patches:
+            ax.add_patch(Polygon(white_patch.get_xy(), closed=True, color='white'))
         # Add the lines to the plot
         for line in lines:
-            plt.gca().add_line(line)
+            ax.add_line(line)
+            if draw_dimensions:
+                plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
+                plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
+                plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
+                plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
+            ax.set_aspect('equal', adjustable='box')
+            ax.autoscale_view()
 
-        if draw_dimensions:
-            plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
-            plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
-            plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
-            plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.gca().autoscale_view()
+        colorbar_axes = inset_axes(ax,
+                                   width="100%",  # width = 100% of parent_bbox width
+                                   height="5%",  # height : 5%
+                                   loc='lower center',
+                                   bbox_to_anchor=(0.0, -0.05, 1, 1),
+                                   bbox_transform=ax.transAxes,
+                                   borderpad=0)
+
+        # Create the colorbar in the new axes.
+        colour_bar = plt.colorbar(patch_collection, cax=colorbar_axes, orientation='horizontal', pad=0.2)
+        colour_bar.locator = MaxNLocator(integer=True)
+        colour_bar.update_ticks()
+        # Set the label for the colorbar.
+        label = plt.gcf().text(0.515, 0.12, "Ring Size", ha='center')
+
+        def on_resize(event):
+            # Get the height of the axes in pixels.
+            axes_height = colorbar_axes.get_window_extent().height
+            # Calculate the new font size (you may need to adjust the scaling factor).
+            new_font_size = axes_height / 2.5
+            # Update the title font size.
+            label.set_fontsize(new_font_size)
+            label.set_position((0.515, 0.12))
+
+        # Connect the resize event to the on_resize function.
+        plt.gcf().canvas.mpl_connect('resize_event', on_resize)
+
+        # Trigger the resize event to set the initial font size.
+        plt.gcf().canvas.draw()
 
     def get_ring_size_limits(self) -> tuple[int, int]:
         max_ring_size = max([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
@@ -888,35 +888,35 @@ class NetMCData:
     def yhi(self):
         return self.dimensions[1, 1]
 
-    def __deepcopy__(self, memo) -> NetMCData:
-        copied_base_nodes_dict = {id(node): NetMCNode(
-            coord=node.coord, id=node.id, type=node.type) for node in self.base_network.nodes}
-        copied_ring_nodes_dict = {id(node): NetMCNode(
-            coord=node.coord, id=node.id, type=node.type) for node in self.ring_network.nodes}
+    def __deepcopy__(self: BSSData, memo) -> BSSData:
+        copied_base_nodes: list[BSSNode] = [BSSNode(coord=np.copy(node.coord), id=id, type="base") for id, node in enumerate(self.base_network.nodes)]
+        copied_ring_nodes: list[BSSNode] = [BSSNode(coord=np.copy(node.coord), id=id, type="ring") for id, node in enumerate(self.ring_network.nodes)]
         for node in self.base_network.nodes:
-            copied_node = copied_base_nodes_dict[id(node)]
-            copied_node.neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
-            copied_node.ring_neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
+            for neighbour in node.neighbours:
+                copied_base_nodes[node.id].add_neighbour(copied_base_nodes[neighbour.id], self.dimensions)
+            for ring_neighbour in node.ring_neighbours:
+                copied_base_nodes[node.id].add_ring_neighbour(copied_ring_nodes[ring_neighbour.id], self.dimensions)
         for node in self.ring_network.nodes:
-            copied_node = copied_ring_nodes_dict[id(node)]
-            copied_node.neighbours = [copied_ring_nodes_dict[id(neighbour)] for neighbour in node.neighbours]
-            copied_node.ring_neighbours = [copied_base_nodes_dict[id(neighbour)] for neighbour in node.ring_neighbours]
-        return NetMCData(NetMCNetwork(list(copied_base_nodes_dict.values()), "base", self.dimensions, self.base_network.geom_code),
-                         NetMCNetwork(list(copied_ring_nodes_dict.values()), "ring", self.dimensions, self.ring_network.geom_code),
-                         self.dimensions)
+            for neighbour in node.neighbours:
+                copied_ring_nodes[node.id].add_neighbour(copied_ring_nodes[neighbour.id], self.dimensions)
+            for ring_neighbour in node.ring_neighbours:
+                copied_ring_nodes[node.id].add_ring_neighbour(copied_base_nodes[ring_neighbour.id], self.dimensions)
+        return BSSData(BSSNetwork(copied_base_nodes, "base", np.copy(self.dimensions)),
+                       BSSNetwork(copied_ring_nodes, "ring", np.copy(self.dimensions)),
+                       np.copy(self.dimensions), copy.copy(self.fixed_rings))
 
     def __repr__(self) -> str:
-        string = f"NetMCData with dimensions:\nxlo: {self.xlo}\txhi: {self.xhi}\tylo: {self.ylo}\tyhi: {self.yhi}\n"
+        string = f"BSSData with dimensions:\nxlo: {self.xlo}\txhi: {self.xhi}\tylo: {self.ylo}\tyhi: {self.yhi}\n"
         string += f"Base network:\n{self.base_network}\nRing network:\n{self.ring_network}"
         return string
 
 
 @dataclass
-class NetMCNode:
+class BSSNode:
     coord: np.array
     type: str
-    neighbours: list[NetMCNode] = field(default_factory=lambda: [])
-    ring_neighbours: list[NetMCNode] = field(default_factory=lambda: [])
+    neighbours: list[BSSNode] = field(default_factory=lambda: [])
+    ring_neighbours: list[BSSNode] = field(default_factory=lambda: [])
     id: Optional[int] = None
 
     def check(self, dimensions: np.array) -> bool:
@@ -948,19 +948,19 @@ class NetMCNode:
                 valid = False
         return valid
 
-    def sort_neighbours_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
+    def sort_neighbours_clockwise(self, nodes: list[BSSNode], dimensions: np.array) -> None:
         """
         Sorts the given neighbours in clockwise order.
         """
         nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
 
-    def sort_neighbours_clockwise(self, nodes: list[NetMCNode], dimensions: np.array) -> None:
+    def sort_neighbours_clockwise(self, nodes: list[BSSNode], dimensions: np.array) -> None:
         """
         Sorts the given neighbours in clockwise order.
         """
         nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
 
-    def get_ring_walk(self) -> list[NetMCNode]:
+    def get_ring_walk(self) -> list[BSSNode]:
         """
         Returns a list of nodes such that the order is how they are connected in the ring.
         """
@@ -977,24 +977,24 @@ class NetMCNode:
             counter += 1
         return walk
 
-    def get_angles(self) -> Iterator[tuple[NetMCNode, NetMCNode, NetMCNode]]:
+    def get_angles(self) -> Iterator[tuple[BSSNode, BSSNode, BSSNode]]:
         for i in range(len(self.neighbours)):
             node_1 = self.neighbours[i]
             node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
             yield (node_1, self, node_2)
 
-    def add_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
+    def add_neighbour(self, neighbour: BSSNode, dimensions: np.array) -> None:
         self.neighbours.append(neighbour)
         self.sort_neighbours_clockwise(self.neighbours, dimensions)
 
-    def delete_neighbour(self, neighbour: NetMCNode) -> None:
+    def delete_neighbour(self, neighbour: BSSNode) -> None:
         self.neighbours.remove(neighbour)
 
-    def add_ring_neighbour(self, neighbour: NetMCNode, dimensions: np.array) -> None:
+    def add_ring_neighbour(self, neighbour: BSSNode, dimensions: np.array) -> None:
         self.ring_neighbours.append(neighbour)
         self.sort_neighbours_clockwise(self.ring_neighbours, dimensions)
 
-    def delete_ring_neighbour(self, neighbour: NetMCNode) -> None:
+    def delete_ring_neighbour(self, neighbour: BSSNode) -> None:
         self.ring_neighbours.remove(neighbour)
 
     def translate(self, vector: np.array) -> None:
@@ -1020,7 +1020,7 @@ class NetMCNode:
         return self.coord[1]
 
     def __eq__(self, other) -> bool:
-        if isinstance(other, NetMCNode):
+        if isinstance(other, BSSNode):
             return (self.id == other.id and
                     self.type == other.type and
                     np.array_equal(self.coord, other.coord) and
@@ -1039,9 +1039,9 @@ class NetMCNode:
 
 
 @dataclass
-class NetMCBond:
-    node_1: NetMCNode
-    node_2: NetMCNode
+class BSSBond:
+    node_1: BSSNode
+    node_2: BSSNode
 
     def __post_init__(self) -> None:
         self.type = f"{self.node_1.type}-{self.node_2.type}"
@@ -1060,7 +1060,7 @@ class NetMCBond:
         return True
 
     def __eq__(self, other) -> bool:
-        if isinstance(other, NetMCBond):
+        if isinstance(other, BSSBond):
             return ((self.node_1 == other.node_1 and self.node_2 == other.node_2) or
                     (self.node_1 == other.node_2 and self.node_2 == other.node_1))
         return False
