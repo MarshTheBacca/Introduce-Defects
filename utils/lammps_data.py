@@ -8,7 +8,7 @@ import networkx as nx
 import numpy as np
 from scipy.spatial import KDTree
 
-from .netmc_data import NetMCNetwork
+from .bss_data import BSSNetwork
 
 LAMMPS_DEFAULT_DESCRIPTION = "Written by lammps_data.py made by Marshall Hunt"
 
@@ -172,22 +172,22 @@ class LAMMPSData:
         bond_lines = get_lines_between_headers(lines, "Bonds", HEADER_NAMES)
 
     @staticmethod
-    def from_netmc_network(netmc_network: NetMCNetwork, atom_label: str, atomic_mass: Optional[float] = None,
-                           atom_style: str = "atomic") -> LAMMPSData:
-        # NetMC data contains only one atom type, which is not knowable from the files
+    def from_bss_network(bss_network: BSSNetwork, atom_label: str, atomic_mass: Optional[float] = None,
+                         atom_style: str = "atomic") -> LAMMPSData:
+        # BSS data contains only one atom type, which is not knowable from the files
         # We can also not deduce the desired dimensions, atomic masses or bond/angle types
-        data = LAMMPSData([], netmc_network.dimensions, {})
+        data = LAMMPSData([], bss_network.dimensions, {})
         if atomic_mass is not None:
             data.add_mass(atom_label, atomic_mass)
-        for node in netmc_network.nodes:
+        for node in bss_network.nodes:
             if atom_style == "atomic":
                 data.add_atom(LAMMPSAtom(coord=node.coord, label=atom_label))
             elif atom_style == "molecular":
-                # Since we cannot deduce what molecule an atom belongs to from NetMC data, we set molecule_id to be the same as id
+                # Since we cannot deduce what molecule an atom belongs to from BSS data, we set molecule_id to be the same as id
                 data.add_atom(LAMMPSMolecule(coord=node.coord, label=atom_label))
             else:
                 raise ValueError(f"Atom style {atom_style} is not supported.")
-        for node in netmc_network.nodes:
+        for node in bss_network.nodes:
             for neighbour in node.neighbours:
                 if node.id < neighbour.id:
                     data.add_bond(data.atoms[node.id], data.atoms[neighbour.id])
@@ -339,15 +339,15 @@ class LAMMPSData:
             for bond in [bond for bond in self.bonds if bond.label == bond_label]:
                 if not bond.is_pbc_bond(self.dimensions):
                     graph.add_edge(bond.atom_1.id, bond.atom_2.id)
-        node_colors = [atom_colours[atom.label] for atom in self.atoms]
-        edge_colors = [bond_colours[bond.label] for bond in self.bonds]
+        node_colours = [atom_colours[atom.label] for atom in self.atoms]
+        edge_colours = [bond_colours[bond.label] for bond in self.bonds]
         node_sizes = [atom_sizes[atom.label] for atom in self.atoms]
         pos = nx.get_node_attributes(graph, "pos")
         if self.num_dimensions == 2:
             pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
         elif self.num_dimensions == 3:
             pos_labels = {node: (x + offset, y + offset, z + offset) for node, (x, y, z) in pos.items()}
-        nx.draw(graph, pos, node_color=node_colors, edge_color=edge_colors, node_size=node_sizes)
+        nx.draw(graph, pos, node_color=node_colours, edge_color=edge_colours, node_size=node_sizes)
         if atom_labels:
             nx.draw_networkx_labels(graph, pos_labels, labels={atom.id: atom.id for atom in self.atoms}, font_size=7, font_color="gray")
         if bond_labels:
