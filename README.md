@@ -1,20 +1,42 @@
 # Introduce Defects
 
-This repository can be used to invoke 'atom evaporisation' on 2D networks for us with Wilson Group's [2D Network Monte Carlo](https://github.com/WilsonGroupOxford/Network-Monte-Carlo) repository. It is not in its final state, but is essentially complete.
+This repository can be used to invoke 'atom evaporisation' on 2D networks for use with Wilson Group's [Bond Switch Simulator](https://github.com/MarshTheBacca/Bond-Switch-Simulator) repository.
 
 ![Flower Network](Flower_Network.png)
 
 ## Running the code
 
-To produce a network, run `test_2.py` which creates a network with 36 rings by default, but you can change that number to whatever you like (I've tested networks upwards of 100,000 rings).
+Running `main.py` will present you with 5 options. You can either:
 
-It also produces a [LAMMPS](https://www.lammps.org/) data file for the network for use in the [LAMMPS-NetMC](https://github.com/MarshTheBacca/LAMMPS-NetMC) repository.
+### Introduce Defects
 
-Then run `introduce_defects.py` to read from these output files, which creates an interactive window where you can click nodes to evaporate them.
+You can introduce defects into either a new network or an existing network (which can be done iteratively, to introduce several defects).
+An interactive window will appear, where you can click nodes to delete them. When you are finished deleting nodes, right click, and the program will attempt to form bonds between undercoordinated nodes. If you have not met the following criteria, you will have to continue deleting nodes:
 
-Once you are finished evaporating nodes, right click, and the program will form bonds between undercoordinated nodes, and save the network.
+* There are an odd number of undercoordinated nodes
+* There are 3 or more undercoordinated nodes adjacent to one another
+* There are undercoordinated nodes that are members of different rings
+* There are an odd number of nodes separating 'islands'
 
-This can be done iteratively to introduce several holes in different areas of the network.
+These contraints are necessary to fill coordination of all nodes properly. An _island_ is when two undercoordinated nodes are adjacent to one another.
+
+Upon adhering to these constraints, the program will save the network, as well as a [LAMMPS](https://www.lammps.org/) data file for the network, which is needed for the Bond Switch Simulator.
+
+### Visualise a Network
+
+Self explanatory, you choose from a list of saved networks, and the program will display the network using the new 'pretty plotting' function. Fixed rings are drawn in red, rings over a size of 10 are drawn in white
+
+### Delete a Network
+
+Self explanators, you choose from a list of saved networks, and the program will delete it
+
+### Copy a Network
+
+Self explanators, you choose from a list of saved networks, and the program will copy it with a given new name
+
+### Create a fixed_rings.txt File
+
+The fixed_rings.txt file is used by _Bond Switch Simulator_ to make a ring invariable during a simulation. This is supposed to represent a defect that has been introduced via templating.
 
 ## Dependencies
 
