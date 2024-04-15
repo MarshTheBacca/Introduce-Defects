@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 from tabulate import tabulate
 
 from utils import (BSSData, DefectIntroducer, LAMMPSData, UserCancelledError,
-                   get_valid_float, get_valid_int, get_valid_str)
+                   confirm, get_valid_float, get_valid_int, get_valid_str)
 
 matplotlib.use('TkAgg')
 
@@ -45,7 +45,7 @@ def select_network(path: Path, prompt: str) -> str:
     if not network_array:
         raise MissingFilesError(f"No networks found in {path}")
     exit_num: int = len(network_array) + 1
-    print(tabulate(network_array, headers=["Number", "Network Name", "Creation Date"], tablefmt="fancy_grid"))
+    print(tabulate(network_array, headers=["Number", "Network Name", "Date Modified"], tablefmt="fancy_grid"))
     prompt += f" ({exit_num} to exit):\n"
     option: int = get_valid_int(prompt, 1, exit_num)
     if option == exit_num:
@@ -60,29 +60,36 @@ def save_network(bss_data: BSSData) -> None:
     Args:
         bss_data: BSSData object to save
     """
-    option = get_valid_int("Would you like to save the network?\n1) Yes\n2) No\n", 1, 2)
-    if option == 2:
+    if not confirm("Would you like to save the network? (y/n)"):
         return
     # Create a dialog box to get a path to save the network in
     root = tk.Tk()
     root.withdraw()
-    networks_path = Path(filedialog.askdirectory(title="Browse to networks folder")).resolve()
-    # If the user cancels the dialog, networks_path will be an empty string
-    if not networks_path:
-        print("No path selected, cancelling save operation")
+    directory = filedialog.askdirectory(title="Browse to networks folder", initialdir=NETWORKS_PATH)
+    if not directory:
+        print("No directory selected. Network will not be saved.")
         return
+    networks_path = Path(directory).resolve()
+
     while True:
-        name = input("Enter a name for the new network: ")
+        print(f"Max ring size: {bss_data.get_ring_size_limits()[1]}")
+        name = get_valid_str("Enter a name for the new network: ", upper=50, forbidden_chars=[" ", "\\", "/", ","])
         save_path = networks_path.joinpath(name)
         try:
             save_path.mkdir(exist_ok=False)
             break
         except FileExistsError:
             print("Network with that name already exists, please choose another name.")
-    try:
-        scale, atom_label, atomic_mass = get_lammps_params()
-    except UserCancelledError:
-        return
+    print("Graphene preset: Bond length 2.1580672 Bohr Radii, Atom Label C, Atomic Mass 12")
+    if confirm("Would you like to apply graphene preset? (y/n)"):
+        scale = 2.1580672
+        atom_label = "C"
+        atomic_mass = 12
+    else:
+        try:
+            scale, atom_label, atomic_mass = get_lammps_params()
+        except UserCancelledError:
+            return
     bss_data.scale(scale)
     print(f"Saving network to {save_path}...")
     bss_data.export(save_path)
@@ -125,12 +132,16 @@ def introduce_defects(networks_path: Path) -> None:
         print("\nDue to the process of creating a box-like network, the number of rings must be "
               "equal to an even number squared, eg, 4, 16, 36, 64, 100, etc.\n"
               "However, any number you enter will be rounded down to the nearest even number squared.\n")
-        num_rings = get_valid_int("How many rings would you like to create (minimum 4, 'c' to cancel)?\n", 4, exit_string="c")
-        if num_rings is None:
+        try:
+            num_rings = get_valid_int("How many rings would you like to create (minimum 4, 'c' to cancel)?\n", 4, exit_string="c")
+        except UserCancelledError:
             return
         bss_data = BSSData.gen_hexagonal(num_rings)
     plotter = DefectIntroducer(bss_data, networks_path)
     plotter.plot()
+    if not plotter.closed_properly:
+        print("User closed the plot window, exiting without saving...")
+        return
     save_network(plotter.bss_data)
 
 
@@ -144,22 +155,25 @@ def visualise_network(networks_path: Path) -> None:
     except UserCancelledError:
         return
     bss_data = BSSData.from_files(networks_path.joinpath(chosen_network_name))
-    bss_data.draw_graph_pretty(True)
+    if confirm("Enable debugging view? (y/n)"):
+        bss_data.draw_graph(True, True, True, True, True, True, True)
+    else:
+        bss_data.draw_graph_pretty(True)
     plt.show()
 
 
 def delete_network(networks_path: Path) -> None:
-    try:
-        chosen_network_name = select_network(networks_path, "Select a network to delete")
-    except MissingFilesError as e:
-        print(e)
-        return
-    except UserCancelledError:
-        return
-    confirm = get_valid_int("Are you sure you want to delete this network?\n1) Yes\n2) No\n", 1, 2)
-    if confirm == 1:
-        shutil.rmtree(networks_path.joinpath(chosen_network_name))
-        print(f"Deleted network {chosen_network_name}")
+    while True:
+        try:
+            chosen_network_name = select_network(networks_path, "Select a network to delete")
+        except MissingFilesError as e:
+            print(e)
+            return
+        except UserCancelledError:
+            return
+        if confirm(f"Are you sure you want to delete {chosen_network_name}? (y/n)"):
+            shutil.rmtree(networks_path.joinpath(chosen_network_name))
+            print(f"Deleted network {chosen_network_name}")
 
 
 def copy_network(networks_path: Path) -> None:
@@ -177,6 +191,23 @@ def copy_network(networks_path: Path) -> None:
         return
     shutil.copytree(networks_path.joinpath(chosen_network_name), networks_path.joinpath(new_name))
     print(f"Copied network {chosen_network_name} to {new_name}")
+
+
+def rename_network(networks_path: Path) -> None:
+    try:
+        chosen_network_name = select_network(networks_path, "Select a network to rename")
+    except MissingFilesError as e:
+        print(e)
+        return
+    except UserCancelledError:
+        return
+    if chosen_network_name is None:
+        return
+    new_name = get_valid_str("Enter a new name for the network ('c' to cancel): ", upper=255, forbidden_chars=[" ", "\\", "/"])
+    if new_name == "c":
+        return
+    shutil.move(networks_path.joinpath(chosen_network_name), networks_path.joinpath(new_name))
+    print(f"Renamed network {chosen_network_name} to {new_name}")
 
 
 def create_fixed_rings_file(networks_path: Path) -> None:
@@ -216,8 +247,9 @@ def main():
                                "\n2) Visualise network"
                                "\n3) Delete network"
                                "\n4) Copy a network"
-                               "\n5) Create a fixed_rings.txt file for a network"
-                               "\n6) Exit\n", 1, 6)
+                               "\n5) Rename a network"
+                               "\n6) Create a fixed_rings.txt file for a network"
+                               "\n7) Exit\n", 1, 7)
         if option == 1:
             introduce_defects(NETWORKS_PATH)
         elif option == 2:
@@ -227,8 +259,10 @@ def main():
         elif option == 4:
             copy_network(NETWORKS_PATH)
         elif option == 5:
-            create_fixed_rings_file(NETWORKS_PATH)
+            rename_network(NETWORKS_PATH)
         elif option == 6:
+            create_fixed_rings_file(NETWORKS_PATH)
+        elif option == 7:
             break
 
 
