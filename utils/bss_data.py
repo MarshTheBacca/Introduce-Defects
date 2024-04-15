@@ -3,20 +3,24 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib.backend_bases import (CloseEvent, KeyEvent, MouseEvent,
+                                      ResizeEvent)
 from matplotlib.collections import PatchCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
 from matplotlib.ticker import MaxNLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from scipy.spatial import KDTree
 from scipy.stats import gaussian_kde
 
-NETWORK_TYPE_MAP = {"base": "base_network", "ring": "dual_network"}
+from .bss_network import BSSNetwork
+from .bss_node import BSSNode
+from .other_utils import (find_common_elements, pbc_vector, rounded_even_sqrt,
+                          settify)
 
 
 class InvalidNetworkException(Exception):
@@ -37,32 +41,6 @@ class CouldNotBondUndercoordinatedNodesException(Exception):
         super().__init__(self.message)
 
 
-def angle_to_node(node_1: BSSNode, node_2: BSSNode, dimensions: np.array) -> float:
-    """
-    Returns the angle between the x-axis and the vector from the node
-    to the given node in radians, range of -pi to pi.
-    """
-    periodic_vector = pbc_vector(node_1.coord, node_2.coord, dimensions)
-    return -np.arctan2(periodic_vector[1], periodic_vector[0])
-
-
-def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarray) -> float:
-    """
-    Returns the angle between three points in degrees.
-    """
-    vector1 = np.array(coord_1) - np.array(coord_2)
-    vector2 = np.array(coord_3) - np.array(coord_2)
-    dot_product = np.dot(vector1, vector2)
-    magnitude1 = np.linalg.norm(vector1)
-    magnitude2 = np.linalg.norm(vector2)
-    # Clamp the value to the range [-1, 1] to avoid RuntimeWarning from floating point errors
-    dot_product_over_magnitudes = np.clip(dot_product / (magnitude1 * magnitude2), -1.0, 1.0)
-    angle = np.arccos(dot_product_over_magnitudes)
-    angle = np.degrees(angle)
-    # Return the acute angle
-    return min(angle, 180 - angle)
-
-
 def get_nodes(path: Path, network_type: str) -> list[BSSNode]:
     """
     Read a file containing node coordinates and return a list of BSSNode objects.
@@ -74,7 +52,7 @@ def get_nodes(path: Path, network_type: str) -> list[BSSNode]:
     return nodes
 
 
-def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: list[BSSNode], dimensions: np.array) -> None:
+def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: list[BSSNode], dimensions: np.ndarray) -> None:
     """
     Read a file containing node connections and add the connections to the selected nodes.
     """
@@ -91,6 +69,9 @@ def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: lis
 
 
 def get_info_data(path: Path) -> np.ndarray:
+    """
+    Reads the dimensions from a BSS info file (num nodes is not necessary)
+    """
     with open(path, "r") as info_file:
         info_file.readline()
         xhi = info_file.readline().strip().split()[1]
@@ -100,61 +81,11 @@ def get_info_data(path: Path) -> np.ndarray:
 
 
 def get_fixed_rings(path: Path) -> set[int]:
-    try:
-        with open(path, "r") as fixed_rings_file:
-            return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
-    except FileNotFoundError:
-        return set()
+    with open(path, "r") as fixed_rings_file:
+        return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
 
 
-def settify(iterable: list) -> list:
-    """
-    Used to remove duplicates from a list while preserving order. This is for lists with mutable types, ie, are not hashable.
-    """
-    return_list = []
-    for item in iterable:
-        if item not in return_list:
-            return_list.append(item)
-    return return_list
-
-
-def find_common_elements(lists: list[list]) -> list:
-    """
-    Return a list of elements that are common to all lists.
-    """
-    first_list = lists[0]
-    common_elements = [element for element in first_list if all(
-        element in lst for lst in lists[1:])]
-    return common_elements
-
-
-def rounded_even_sqrt(number: float) -> int:
-    """
-    Return the square root of a number rounded down to the nearest even number.
-    """
-    if number < 0:
-        raise ValueError("Cannot take the square root of a negative number.")
-    rounded_root = np.floor(np.sqrt(number))
-    if rounded_root % 2 == 0:
-        return int(rounded_root)
-    return int(rounded_root - 1)
-
-
-def pbc_vector(vector1: np.ndarray, vector2: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
-    """
-    Calculate the vector difference between two vectors, taking into account periodic boundary conditions.
-    Remember dimensions = [[xlo, ylo], [xhi, yhi]]
-    """
-    if len(vector1) != len(vector2) or len(vector1) != len(dimensions):
-        raise ValueError("Vectors must have the same number of dimensions.")
-    difference_vector = np.subtract(vector2, vector1)
-    dimension_ranges = dimensions[1] - dimensions[0]
-    half_dimension_ranges = dimension_ranges / 2
-    difference_vector = (difference_vector + half_dimension_ranges) % dimension_ranges - half_dimension_ranges
-    return difference_vector
-
-
-def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.array) -> bool:
+def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.ndarray) -> bool:
     """
     Identifies bonds that cross the periodic boundary. So if the length of the bond is 
     more than 10% longer than the distance between the two nodes with periodic boundary conditions,
@@ -163,197 +94,6 @@ def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.array) -> bool:
     if np.linalg.norm(node_1.coord - node_2.coord) > np.linalg.norm(pbc_vector(node_1.coord, node_2.coord, dimensions)) * 1.1:
         return True
     return False
-
-
-@dataclass
-class BSSNetwork:
-    nodes: list[BSSNode] = field(default_factory=lambda: [])
-    type: str = "base"
-    dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
-
-    def delete_node(self, node: BSSNode) -> None:
-        if node.type == self.type:
-            self.nodes.remove(node)
-            for i, node in enumerate(self.nodes):
-                node.id = i
-
-    def add_node(self, node) -> None:
-        if node.type == self.type:
-            self.nodes.append(node)
-            node.id = self.num_nodes - 1
-
-    def check(self) -> bool:
-        valid = True
-        if self.type not in ("base", "ring"):
-            print(f"Network has invalid type {self.type}")
-            valid = False
-        for node in self.nodes:
-            if not node.check(self.dimensions):
-                valid = False
-        for bond in self.bonds:
-            if not bond.check():
-                valid = False
-        for ring_bond in self.ring_bonds:
-            if not ring_bond.check():
-                valid = False
-        return valid
-
-    def bond_close_nodes(self, target_distance: float, coordination: int) -> None:
-        coords = np.array([[node.x, node.y] for node in self.nodes])
-        tree = KDTree(coords)
-        distances, indices = tree.query(coords, k=coordination + 1)
-        for node_index, neighbours in enumerate(indices):
-            for neighbour, distance in zip(neighbours, distances[node_index]):
-                if node_index != neighbour and np.isclose(distance, target_distance, rtol=1e-2):
-                    self.nodes[node_index].add_neighbour(self.nodes[neighbour], self.dimensions)
-                    self.nodes[neighbour].add_neighbour(self.nodes[node_index], self.dimensions)
-
-    def translate(self, vector: np.ndarray) -> None:
-        for node in self.nodes:
-            node.translate(vector)
-
-    def scale(self, scale_factor: float) -> None:
-        for node in self.nodes:
-            node.scale(scale_factor)
-        self.dimensions *= scale_factor
-
-    def get_nearest_node(self, point: np.array) -> tuple[BSSNode, float]:
-        distance, index = self.kdtree.query(point)
-        return self.nodes[index], distance
-
-    def get_average_bond_length(self) -> float:
-        return np.mean([bond.pbc_length(self.dimensions) for bond in self.bonds])
-
-    @property
-    def kdtree(self):
-        return KDTree(np.array([[node.x, node.y] for node in self.nodes]))
-
-    @property
-    def bonds(self) -> list[BSSBond]:
-        """
-        Computationally expensive, do not use regularly.
-        """
-        bonds = []
-        for node in self.nodes:
-            for neighbour in node.neighbours:
-                bond = BSSBond(node, neighbour)
-                if bond not in bonds:
-                    bonds.append(bond)
-        return bonds
-
-    @property
-    def ring_bonds(self) -> list[BSSBond]:
-        bonds = []
-        for node in self.nodes:
-            for neighbour in node.ring_neighbours:
-                bonds.append(BSSBond(node, neighbour))
-        return bonds
-
-    @property
-    def graph(self) -> nx.Graph:
-        graph = nx.Graph()
-        for node in self.nodes:
-            graph.add_node(node.id, pos=(node.x, node.y))
-        for bond in self.bonds:
-            if bond.length < 2 * self.avg_bond_length:
-                graph.add_edge(bond.node_1.id, bond.node_2.id)
-        return graph
-
-    def get_angles(self) -> Iterator[tuple[BSSNode, BSSNode, BSSNode]]:
-        for node in self.nodes:
-            for angle in node.get_angles():
-                yield angle
-
-    def evaluate_strain(self, ideal_bond_length: float, ideal_bond_angle: float) -> float:
-        """
-        Evaluates the strain of a network using a very basic model. E = sum((l - l_0)^2) + sum((theta - theta_0)^2)
-        Bond angles are in degrees.
-        """
-        bond_length_strain = np.sum([(bond.length - ideal_bond_length) ** 2 for bond in self.bonds])
-        angle_strain = 0
-        for angle in self.get_angles():
-            angle_deviation = calculate_angle(
-                angle[0].coord, angle[1].coord, angle[2].coord) - ideal_bond_angle
-            angle_strain += angle_deviation ** 2
-        return bond_length_strain + angle_strain
-
-    def export(self, dimensions: np.ndarray, path: Path) -> None:
-        self.export_info(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_info.txt"), dimensions)
-        self.export_coords(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_coords.txt"))
-        self.export_base_bonds(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_connections.txt"))
-        self.export_ring_bonds(path.joinpath(f"{NETWORK_TYPE_MAP[self.type]}_dual_connections.txt"))
-
-    def export_info(self, path: Path, dimensions: np.ndarray) -> None:
-        with open(path, "w") as info_file:
-            info_file.write(f"Number of nodes: {self.num_nodes}\n")
-            info_file.write(f"xhi: {dimensions[1][0]}\n")
-            info_file.write(f"yhi: {dimensions[1][1]}\n")
-
-    def export_coords(self, path: Path) -> None:
-        coords = np.array([[node.x, node.y] for node in self.nodes])
-        np.savetxt(path, coords, fmt="%-19.6f")
-
-    def export_bonds(self, path: Path, neighbour_attribute: str) -> None:
-        with open(path, "w") as file:
-            for node in self.nodes:
-                for neighbour in getattr(node, neighbour_attribute):
-                    file.write(f"{neighbour.id:<10}")
-                file.write("\n")
-
-    def export_base_bonds(self, path: Path) -> None:
-        self.export_bonds(path, "neighbours")
-
-    def export_ring_bonds(self, path: Path) -> None:
-        self.export_bonds(path, "ring_neighbours")
-
-    @property
-    def num_nodes(self):
-        return len(self.nodes)
-
-    @property
-    def num_bonds(self):
-        return len(self.bonds)
-
-    @property
-    def num_ring_bonds(self):
-        return len(self.ring_bonds)
-
-    @property
-    def max_connections(self):
-        return max([node.num_neighbours for node in self.nodes])
-
-    @property
-    def max_ring_connections(self):
-        return max([node.num_ring_neighbours for node in self.nodes])
-
-    @property
-    def node_xlo(self):
-        return min([node.x for node in self.nodes])
-
-    @property
-    def node_xhi(self):
-        return max([node.x for node in self.nodes])
-
-    @property
-    def node_ylo(self):
-        return min([node.y for node in self.nodes])
-
-    @property
-    def node_yhi(self):
-        return max([node.y for node in self.nodes])
-
-    def __eq__(self, other):
-        if isinstance(other, BSSNetwork):
-            return (self.nodes == other.nodes and
-                    self.type == other.type and
-                    self.dimensions == other.dimensions)
-        return False
-
-    def __repr__(self) -> str:
-        string = f"BSSNetwork of type {self.type} with {self.num_nodes} nodes: \n"
-        for node in self.nodes:
-            string += f"{node}\n"
-        return string
 
 
 @dataclass
@@ -545,23 +285,41 @@ class BSSData:
         for ring_neighbour in node.ring_neighbours:
             ring_neighbour.add_ring_neighbour(node, self.dimensions)
 
+    def merge_rings(self, rings_to_merge: list[BSSNode], reference_coord: Optional[np.ndarray] = None) -> None:
+        peripheral_rings = settify([neighbour for ring_node in rings_to_merge for neighbour in ring_node.neighbours
+                                    if neighbour not in rings_to_merge])
+        peripheral_nodes = settify([neighbour for ring_node in rings_to_merge for neighbour in ring_node.ring_neighbours])
+        if reference_coord is None:
+            new_coord = np.mean([base_node.coord for base_node in peripheral_nodes], axis=0)
+        else:
+            new_coord = np.mean([reference_coord + pbc_vector(reference_coord, base_node.coord, self.dimensions)
+                                for base_node in peripheral_nodes], axis=0)
+        new_node = BSSNode(new_coord, rings_to_merge[0].type, peripheral_rings, peripheral_nodes)
+        self.add_node(new_node)
+        for ring_node in rings_to_merge:
+            self.delete_node(ring_node)
+
     def delete_node_and_merge_rings(self, node: BSSNode) -> None:
         rings_to_merge = node.ring_neighbours.copy()
-        # I have to use settify instead of set() because the nodes are not hashable
-        all_neighbours = settify(
-            [neighbour for node_to_merge in rings_to_merge for neighbour in node_to_merge.neighbours if neighbour not in rings_to_merge])
-        all_ring_neighbours = settify(
-            [neighbour for node_to_merge in rings_to_merge for neighbour in node_to_merge.ring_neighbours])
-        new_coord = np.mean(
-            [ring_neighbour.coord for ring_neighbour in all_ring_neighbours], axis=0)
-        new_node = BSSNode(
-            new_coord, rings_to_merge[0].type, all_neighbours, all_ring_neighbours)
-        self.add_node(new_node)
-        for node_to_merge in rings_to_merge:
-            self.delete_node(node_to_merge)
+        self.merge_rings(rings_to_merge, np.copy(node.coord))
         self.delete_node(node)
 
+    def manual_bond_addition_deletion(self, node_1: BSSNode, node_2: BSSNode) -> None:
+        if node_1 == node_2:
+            raise ValueError("Cannot bond or remove bond between the same node.")
+        if node_1 not in node_2.neighbours:  # Add the bond and create a new ring node
+            new_ring_1, new_ring_2, ring_to_remove = self.get_resulting_rings(node_1, node_2)
+            self.add_bond(node_1, node_2)
+            self.split_ring(new_ring_1, new_ring_2, ring_to_remove)
+            return
+        # If it's already bonded, remove the bond and merge the rings
+        common_rings: list[BSSNode] = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])
+        self.delete_bond(node_1, node_2)
+        self.merge_rings(common_rings)
+
     def add_bond(self, node_1: BSSNode, node_2: BSSNode) -> None:
+        if node_1 == node_2:
+            raise ValueError("Cannot add bond between the same node.")
         if node_1.type == "base" and node_1 not in self.base_network.nodes:
             raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the base network")
         if node_2.type == "base" and node_2 not in self.base_network.nodes:
@@ -573,7 +331,21 @@ class BSSData:
         node_1.add_neighbour(node_2, self.dimensions)
         node_2.add_neighbour(node_1, self.dimensions)
 
-    def get_undrecoordinated_nodes(self, network: BSSNetwork, target_coordination: int) -> list[BSSNode]:
+    def delete_bond(self, node_1: BSSNode, node_2: BSSNode) -> None:
+        if node_1 == node_2:
+            raise ValueError("Cannot remove bond between the same node.")
+        if node_1.type == "base" and node_1 not in self.base_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the base network")
+        if node_2.type == "base" and node_2 not in self.base_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_2.id} is not in the base network")
+        if node_1.type == "ring" and node_1 not in self.ring_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_1.id} is not in the ring network")
+        if node_2.type == "ring" and node_2 not in self.ring_network.nodes:
+            raise ValueError(f"Cannot add bond between nodes {node_1.id} and {node_2.id} because node {node_2.id} is not in the ring network")
+        node_1.delete_neighbour(node_2)
+        node_2.delete_neighbour(node_1)
+
+    def get_undercoordinated_nodes(self, network: BSSNetwork, target_coordination: int) -> list[BSSNode]:
         return [node for node in network.nodes if node.num_neighbours < target_coordination]
 
     @staticmethod
@@ -603,19 +375,22 @@ class BSSData:
         common_rings = find_common_elements([node.ring_neighbours for node in undercoordinated_nodes])
         if len(common_rings) != 1:
             raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
-        common_ring = common_rings[0]
+        common_ring: BSSNode = common_rings[0]
         ring_walk = common_ring.get_ring_walk()
         undercoordinated_nodes.sort(key=lambda node: ring_walk.index(node))
         return undercoordinated_nodes, ring_walk
 
     @staticmethod
     def bond_undercoordinated_nodes(bss_data: BSSData) -> BSSData:
+        if not bss_data.get_undercoordinated_nodes(bss_data.base_network, 3):
+            print("No undercoordinated nodes in base network, leaving network unchanged")
+            return bss_data
         potential_network_1 = copy.deepcopy(bss_data)
         potential_network_2 = copy.deepcopy(bss_data)
         potential_network_1.flip_flop(direction=1)
         potential_network_2.flip_flop(direction=-1)
         if potential_network_1.flopped and potential_network_2.flopped:
-            raise CouldNotBondUndercoordinatedNodesException("Could not bond undercoordinated nodes.")
+            raise CouldNotBondUndercoordinatedNodesException("Could not bond undercoordinated nodes, both networks are invalid")
         elif potential_network_1.flopped:
             return potential_network_2
         elif potential_network_2.flopped:
@@ -640,7 +415,7 @@ class BSSData:
         The movement of every bond seems to 'flip-flop' between the two networks.
         """
         self.flopped = False  # Essentially means the network is invalid if True
-        undercoordinated_nodes = self.get_undrecoordinated_nodes(self.base_network, 3)
+        undercoordinated_nodes = self.get_undercoordinated_nodes(self.base_network, 3)
         undercoordinated_nodes, ring_walk = self.arrange_undercoordinated(undercoordinated_nodes)
         self.check_undercoordinated(undercoordinated_nodes, ring_walk)
         if direction == -1:
@@ -661,6 +436,10 @@ class BSSData:
             ring_node.sort_neighbours_clockwise(node.ring_neighbours, self.dimensions)
 
     def get_resulting_rings(self, node_1: BSSNode, node_2: BSSNode) -> tuple[BSSNode, BSSNode, BSSNode]:
+        """
+        Given two nodes, construct the two new ring nodes needed and find out the one to remove
+        Returns a tuple of ring nodes, the first two are to be created, the last is to be removed
+        """
         try:
             common_ring = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])[0]
         except IndexError:
@@ -852,7 +631,7 @@ class BSSData:
         # Set the label for the colorbar.
         label = plt.gcf().text(0.515, 0.12, "Ring Size", ha='center')
 
-        def on_resize(event):
+        def on_resize(event: ResizeEvent):
             # Get the height of the axes in pixels.
             axes_height = colorbar_axes.get_window_extent().height
             # Calculate the new font size (you may need to adjust the scaling factor).
@@ -861,7 +640,13 @@ class BSSData:
             label.set_fontsize(new_font_size)
             label.set_position((0.515, 0.12))
 
+        def on_key_press(event: KeyEvent):
+            if event.key in ["q", "escape"]:
+                plt.close()
+
         # Connect the resize event to the on_resize function.
+        plt.gcf().canvas.mpl_connect('resize_event', on_resize)
+        plt.gcf().canvas.mpl_connect('key_press_event', on_key_press)
         plt.gcf().canvas.mpl_connect('resize_event', on_resize)
 
         # Trigger the resize event to set the initial font size.
@@ -909,161 +694,3 @@ class BSSData:
         string = f"BSSData with dimensions:\nxlo: {self.xlo}\txhi: {self.xhi}\tylo: {self.ylo}\tyhi: {self.yhi}\n"
         string += f"Base network:\n{self.base_network}\nRing network:\n{self.ring_network}"
         return string
-
-
-@dataclass
-class BSSNode:
-    coord: np.array
-    type: str
-    neighbours: list[BSSNode] = field(default_factory=lambda: [])
-    ring_neighbours: list[BSSNode] = field(default_factory=lambda: [])
-    id: Optional[int] = None
-
-    def check(self, dimensions: np.array) -> bool:
-        valid = True
-        if self.type not in ("base", "ring"):
-            print(f"Node {self.id} has invalid type {self.type}")
-            valid = False
-        for neighbour in self.neighbours:
-            if neighbour == self:
-                print(f"Node {self.id} {self.type} has itself as neighbour")
-                valid = False
-            if self not in neighbour.neighbours:
-                print(f"Node {self.id} {self.type} has neighbour {neighbour.id}, but neighbour does not have node as neighbour")
-                valid = False
-            if self.type != neighbour.type:
-                print(f"Node {self.id} {self.type} has neighbour {neighbour.id}, but neighbour has different type")
-                valid = False
-        for ring_neighbour in self.ring_neighbours:
-            if self not in ring_neighbour.ring_neighbours:
-                print(f"Node {self.id} {self.type} has ring neighbour {ring_neighbour.id}, but ring neighbour does not have node as ring neighbour")
-                valid = False
-            if self.type == ring_neighbour.type:
-                print(f"Node {self.id} {self.type} has ring neighbour {ring_neighbour.id}, but ring neighbour has same type")
-                valid = False
-        for neighbour_list in [self.neighbours, self.ring_neighbours]:
-            sorted_neighbours = sorted(neighbour_list, key=lambda node: angle_to_node(self, node, dimensions))
-            if neighbour_list != sorted_neighbours:
-                print(f"Node {self.id} {self.type} neighbours are not in clockwise order")
-                valid = False
-        return valid
-
-    def sort_neighbours_clockwise(self, nodes: list[BSSNode], dimensions: np.array) -> None:
-        """
-        Sorts the given neighbours in clockwise order.
-        """
-        nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
-
-    def sort_neighbours_clockwise(self, nodes: list[BSSNode], dimensions: np.array) -> None:
-        """
-        Sorts the given neighbours in clockwise order.
-        """
-        nodes.sort(key=lambda node: angle_to_node(self, node, dimensions))
-
-    def get_ring_walk(self) -> list[BSSNode]:
-        """
-        Returns a list of nodes such that the order is how they are connected in the ring.
-        """
-        walk = [self.ring_neighbours[0]]
-        counter = 0
-        while len(walk) < len(self.ring_neighbours):
-            if counter > 999:
-                raise ValueError(f"Could not find ring walk for node {self.id} ({self.type}) ring_neighbours: {[ring_neighbour.id for ring_neighbour in self.ring_neighbours]}")
-            current_node = walk[-1]
-            for neighbour in current_node.neighbours:
-                if neighbour in self.ring_neighbours and neighbour not in walk:
-                    walk.append(neighbour)
-                    break
-            counter += 1
-        return walk
-
-    def get_angles(self) -> Iterator[tuple[BSSNode, BSSNode, BSSNode]]:
-        for i in range(len(self.neighbours)):
-            node_1 = self.neighbours[i]
-            node_2 = self.neighbours[(i + 1) % len(self.neighbours)]
-            yield (node_1, self, node_2)
-
-    def add_neighbour(self, neighbour: BSSNode, dimensions: np.array) -> None:
-        self.neighbours.append(neighbour)
-        self.sort_neighbours_clockwise(self.neighbours, dimensions)
-
-    def delete_neighbour(self, neighbour: BSSNode) -> None:
-        self.neighbours.remove(neighbour)
-
-    def add_ring_neighbour(self, neighbour: BSSNode, dimensions: np.array) -> None:
-        self.ring_neighbours.append(neighbour)
-        self.sort_neighbours_clockwise(self.ring_neighbours, dimensions)
-
-    def delete_ring_neighbour(self, neighbour: BSSNode) -> None:
-        self.ring_neighbours.remove(neighbour)
-
-    def translate(self, vector: np.array) -> None:
-        self.coord += vector
-
-    def scale(self, scale_factor: float) -> None:
-        self.coord *= scale_factor
-
-    @property
-    def num_neighbours(self) -> int:
-        return len(self.neighbours)
-
-    @property
-    def num_ring_neighbours(self) -> int:
-        return len(self.ring_neighbours)
-
-    @property
-    def x(self) -> float:
-        return self.coord[0]
-
-    @property
-    def y(self) -> float:
-        return self.coord[1]
-
-    def __eq__(self, other) -> bool:
-        if isinstance(other, BSSNode):
-            return (self.id == other.id and
-                    self.type == other.type and
-                    np.array_equal(self.coord, other.coord) and
-                    self.neighbours == other.neighbours and
-                    self.ring_neighbours == other.ring_neighbours)
-        return False
-
-    def __repr__(self) -> str:
-        string = f"Node {self.id} {self.type} at {self.coord}. Neighbours: "
-        for neighbour in self.neighbours:
-            string += f"{neighbour.id}, "
-        string += "Ring neighbours: "
-        for ring_neighbour in self.ring_neighbours:
-            string += f"{ring_neighbour.id}, "
-        return string
-
-
-@dataclass
-class BSSBond:
-    node_1: BSSNode
-    node_2: BSSNode
-
-    def __post_init__(self) -> None:
-        self.type = f"{self.node_1.type}-{self.node_2.type}"
-
-    @property
-    def length(self) -> float:
-        return np.linalg.norm(self.node_1.coord - self.node_2.coord)
-
-    def pbc_length(self, dimensions: np.ndarray) -> float:
-        return np.linalg.norm(pbc_vector(self.node_1.coord, self.node_2.coord, dimensions))
-
-    def check(self) -> bool:
-        if self.node_1 == self.node_2:
-            print(f"Bond ({self.type} between node_1: {self.node_1.id} node_2: {self.node_2.id} bonds identical nodes")
-            return False
-        return True
-
-    def __eq__(self, other) -> bool:
-        if isinstance(other, BSSBond):
-            return ((self.node_1 == other.node_1 and self.node_2 == other.node_2) or
-                    (self.node_1 == other.node_2 and self.node_2 == other.node_1))
-        return False
-
-    def __repr__(self) -> str:
-        return f"Bond of type {self.type} between {self.node_1.id} and {self.node_2.id}"
