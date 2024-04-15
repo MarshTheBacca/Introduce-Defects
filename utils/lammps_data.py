@@ -10,7 +10,7 @@ from scipy.spatial import KDTree
 
 from .bss_data import BSSNetwork
 
-LAMMPS_DEFAULT_DESCRIPTION = "Written by lammps_data.py made by Marshall Hunt"
+LAMMPS_DEFAULT_DESCRIPTION = "Written by lammps_data.py made by Marshall Hunt (Part II), Wilson Group, 2024"
 
 LAMMPS_PARAMETER_DEFAULTS = {"atoms": 0, "bonds": 0, "angles": 0, "dihedrals": 0, "impropers": 0, "atom types": 0,
                              "bond types": 0, "angle types": 0, "dihedral types": 0, "improper types": 0,
