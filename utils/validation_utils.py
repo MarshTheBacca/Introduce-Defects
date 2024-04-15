@@ -115,3 +115,29 @@ def get_valid_str(prompt: str,
             print(f"Input must not contain {forbidden_chars}")
             continue
         return string
+
+
+def confirm(prompt: str = "Are you sure? [y,n]\n",
+            answers: tuple[str, str] = ("y", "n")) -> bool:
+    """
+    Asks the user for confirmation
+
+    Args:
+        prompt (str): The prompt to display to the user
+        answers (tuple[str, str]): The two valid answers
+
+    Returns:
+        bool: True if the user confirms, False otherwise
+
+    Raises:
+        ValueError: If the number of valid answers is not equal to 2
+    """
+    if len(answers) != 2:
+        raise ValueError("There must be exactly two answers")
+    while True:
+        conf = input(prompt).lower()
+        if conf == answers[0]:
+            return True
+        elif conf == answers[1]:
+            return False
+        print("That is not a valid answer")
