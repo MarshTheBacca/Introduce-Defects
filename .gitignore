@@ -3,5 +3,9 @@ utils/__pycache__/netmc_data_test.cpython-312.pyc
 utils/__pycache__/bss_data.cpython-312.pyc
 utils/__pycache__/lammps_data.cpython-312.pyc
 networks/
+images/
+visualise_output.py
+test.py
+test_2.py
 
 *.pyc
