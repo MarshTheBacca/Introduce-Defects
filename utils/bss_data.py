@@ -8,8 +8,7 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-from matplotlib.backend_bases import (CloseEvent, KeyEvent, MouseEvent,
-                                      ResizeEvent)
+from matplotlib.backend_bases import KeyEvent, ResizeEvent
 from matplotlib.collections import PatchCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
@@ -562,13 +561,17 @@ class BSSData:
                                     font_size=7, font_color="purple")
         plt.gca().set_aspect('equal', adjustable='box')
 
-    def draw_graph_pretty(self, draw_dimensions: bool = False, threshold_size: int = 10) -> None:
+    def draw_graph_pretty(self, title: str = "BSS Network", window_title: str = "BSS Network Viewer",
+                          draw_dimensions: bool = False, threshold_size: int = 10) -> None:
         if not self.ring_network.nodes:
             print("No nodes to draw.")
             return
 
         plt.axis("off")
         ax = plt.gca()
+        fig = plt.gcf()
+        fig.canvas.manager.set_window_title(window_title)
+        fig.suptitle(title)
         patches = []
         colours = []
         lines = []

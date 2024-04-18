@@ -155,5 +155,5 @@ class DefectIntroducer:
         self.cid_resize = self.fig.canvas.mpl_connect('resize_event', self.on_resize)
         self.cid_motion = self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
         self.bss_data.check()
-        plt.title("Network Editor")
+        plt.title("BSS Network Editor")
         plt.show()

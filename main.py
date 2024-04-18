@@ -158,7 +158,7 @@ def visualise_network(networks_path: Path) -> None:
     if confirm("Enable debugging view? (y/n)"):
         bss_data.draw_graph(True, True, True, True, True, True, True)
     else:
-        bss_data.draw_graph_pretty(True)
+        bss_data.draw_graph_pretty(title=chosen_network_name, draw_dimensions=True)
     plt.show()
 
 
