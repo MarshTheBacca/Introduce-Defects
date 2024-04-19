@@ -36,7 +36,7 @@ def select_network(path: Path, prompt: str) -> str:
         UserCancelledError: If the user chooses to exit
     """
     network_array = []
-    sorted_paths = sorted(Path.iterdir(path), key=lambda p: p.stat().st_ctime, reverse=True)
+    sorted_paths = sorted(Path.iterdir(path), key=lambda p: p.stat().st_ctime, reverse=False)
     for i, path in enumerate(sorted_paths):
         if path.is_dir():
             name = path.name

@@ -11,7 +11,7 @@ from matplotlib.backend_bases import KeyEvent, MouseEvent, ResizeEvent
 from .bss_data import (BSSData, CouldNotBondUndercoordinatedNodesException,
                        InvalidUndercoordinatedNodesException)
 
-MAX_UNDOS = 10
+MAX_UNDOS = 20
 
 
 class UserClosedError(Exception):
@@ -32,6 +32,7 @@ class DefectIntroducer:
         self.initial_anchor_position = None
         self.initial_click_position = None
         self.dragging_node = None
+        self.skip_release = False
 
     def on_key_press(self, event: KeyEvent) -> None:
         if event.key in ["q", "escape"]:
@@ -43,12 +44,11 @@ class DefectIntroducer:
                 plt.close(self.fig)
             except InvalidUndercoordinatedNodesException as e:
                 if str(e) == "Number of undercoordinated nodes is odd, so cannot bond them.":
-                    print("Number of undercoordinated nodes is odd, so cannot bond them.\n Please select another node to delete.")
+                    print(f"{e}\nPlease select another node to delete.")
                 elif str(e) == "There are three consecutive undercoordinated nodes in the ring walk.":
-                    print("There are three consecutive undercoordinated nodes in the ring walk.\n Please select another node to delete.")
-                elif str(e) == "There are an odd number of undercoordinated nodes between two pairs of adjacent undercoordinated nodes.":
-                    print("There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.\n"
-                          "This means we would have to bond an undercoordinated node to one of its own neighbours, which is not allowed.\n"
+                    print(f"{e}\nPlease select another node to delete.")
+                elif str(e) == "There are an odd number of undercoordinated nodes between 'islands'.":
+                    print(f"{e}\nThis means we would have to bond an undercoordinated node to one of its own neighbours, which is not allowed.\n"
                           "Please select another node to delete.")
             except CouldNotBondUndercoordinatedNodesException as e:
                 print(e)
@@ -60,6 +60,10 @@ class DefectIntroducer:
             self.initial_anchor_position = np.array([event.xdata, event.ydata])
 
     def on_press(self, event: MouseEvent):
+        if event.xdata == None or event.ydata == None:
+            self.skip_release = True
+            return
+        self.skip_release = False
         if event.button == 1:
             self.create_backup()
             self.initial_click_position = np.array([event.xdata, event.ydata])
@@ -68,6 +72,8 @@ class DefectIntroducer:
             self.drag_start_time = None
 
     def on_release(self, event: MouseEvent):
+        if event.xdata == None or event.ydata == None or self.skip_release:
+            return
         self.drag_start_time = None
         toolbar = plt.get_current_fig_manager().toolbar
         if toolbar.mode != '':
@@ -141,8 +147,9 @@ class DefectIntroducer:
         if ylim != (0.0, 1.0):
             self.ax.set_ylim(ylim)
         instructions = ("Left click - Delete node\n"
-                        "Right click - Undo (max of 10)\n"
+                        "Right click - Undo (max of 20)\n"
                         "Left click and drag - Move node (ring or base)\n"
+                        "Press 'b' while hovering over two nodes to manually bond them\n"
                         "Q/Escape - Finish")
         self.instructions = self.ax.text(0.5, 0, instructions, transform=self.ax.transAxes, horizontalalignment='center')
         plt.pause(0.001)

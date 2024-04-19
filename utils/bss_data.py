@@ -80,8 +80,11 @@ def get_info_data(path: Path) -> np.ndarray:
 
 
 def get_fixed_rings(path: Path) -> set[int]:
-    with open(path, "r") as fixed_rings_file:
-        return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
+    try:
+        with open(path, "r") as fixed_rings_file:
+            return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
+    except FileNotFoundError:
+        return set()
 
 
 def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.ndarray) -> bool:
@@ -240,7 +243,8 @@ class BSSData:
     def export(self, path: Path) -> None:
         self.base_network.export(self.dimensions, path)
         self.ring_network.export(self.dimensions, path)
-        self.export_fixed_rings(path.joinpath("fixed_rings.txt"))
+        if self.fixed_rings:
+            self.export_fixed_rings(path.joinpath("fixed_rings.txt"))
 
     def export_fixed_rings(self, path: Path) -> None:
         with open(path, "w") as file:
@@ -361,13 +365,22 @@ class BSSData:
             next_node = undercoordinated_nodes[(i + 1) % len(undercoordinated_nodes)]
             if next_node in node.neighbours:
                 islands.append([node, next_node])
-        for i, island in enumerate(islands):
-            font_of_island = island[1]
-            back_of_next_island = islands[(i + 1) % len(islands)][0]
-            undercoordinated_nodes_between_islands = [node for node in undercoordinated_nodes if
-                                                      ring_walk.index(font_of_island) < ring_walk.index(node) < ring_walk.index(back_of_next_island)]
-            if len(undercoordinated_nodes_between_islands) % 2 != 0:
-                raise InvalidUndercoordinatedNodesException("There are an odd number of undercoordinated nodes between two adjacent undercoordinated nodes.")
+        for i in range(len(islands)):
+            island = islands[i]
+            next_island = islands[(i + 1) % len(islands)]
+            between_islands = []
+            start_collecting = False
+            for node in ring_walk:
+                if node == island[1]:
+                    start_collecting = True
+                    continue
+                elif node == next_island[0]:
+                    start_collecting = False
+                    break
+                if start_collecting and node in undercoordinated_nodes:
+                    between_islands.append(node)
+            if len(between_islands) % 2 != 0:
+                raise InvalidUndercoordinatedNodesException("There are an odd number of undercoordinated nodes between 'islands'.")
 
     @staticmethod
     def arrange_undercoordinated(undercoordinated_nodes: list[BSSNode]) -> tuple[list[BSSNode], list[BSSNode]]:
