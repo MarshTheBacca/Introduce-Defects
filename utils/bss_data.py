@@ -40,20 +40,47 @@ class CouldNotBondUndercoordinatedNodesException(Exception):
         super().__init__(self.message)
 
 
+class ImportError(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(self.message)
+
+
 def get_nodes(path: Path, network_type: str) -> list[BSSNode]:
     """
     Read a file containing node coordinates and return a list of BSSNode objects.
+
+    Args:
+        path: the path to the file containing the node coordinates
+        network_type: the type of network (base or ring)
+
+    Raises:
+        ValueError: if the network type is not "base" or "ring"
+        FileNotFoundError: if the file does not exist
+        TypeError: if a coordinate in the file is not a float
+
+    Returns:
+        a list of BSSNode objects with coordinates but no neighbours
     """
     if network_type not in ("base", "ring"):
         raise ValueError("Invalid network type {network_type}")
     coords = np.genfromtxt(path)
-    nodes = [BSSNode(coord=coord, neighbours=[], ring_neighbours=[], id=id, type=network_type) for id, coord in enumerate(coords)]
-    return nodes
+    return [BSSNode(coord=coord, neighbours=[], ring_neighbours=[], id=id, type=network_type) for id, coord in enumerate(coords)]
 
 
 def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: list[BSSNode], dimensions: np.ndarray) -> None:
     """
     Read a file containing node connections and add the connections to the selected nodes.
+
+    Args:
+        path: the path to the file containing the node connections
+        selected_nodes: the nodes to add the connections to
+        bonded_nodes: the nodes to connect to (ie, base-base, base-ring or ring-ring)
+        dimensions: the dimensions of the system
+
+    Raises:
+        FileNotFoundError: if the file does not exist
+        TypeError: if a node in the file is not an integer
     """
     with open(path, "r") as net_file:
         for selected_node, net in enumerate(net_file):
@@ -70,16 +97,38 @@ def fill_neighbours(path: Path, selected_nodes: list[BSSNode], bonded_nodes: lis
 def get_info_data(path: Path) -> np.ndarray:
     """
     Reads the dimensions from a BSS info file (num nodes is not necessary)
+
+    Args:
+        path: the path to the info file
+
+    Raises:
+        FileNotFoundError: if the info file does not exist
+        TypeError: if the xhi and yhi values are not floats
+        IndexError: if the xhi and yhi values are not present in the file
+
+    Returns:
+        the dimensions of the system
     """
     with open(path, "r") as info_file:
-        info_file.readline()
-        xhi = info_file.readline().strip().split()[1]
-        yhi = info_file.readline().strip().split()[1]
-    dimensions = np.array([[0, 0], [float(xhi), float(yhi)]])
-    return dimensions
+        info_file.readline()  # Skip the number of nodes line
+        xhi = info_file.readline().strip().split()[1]  # Get the xhi value
+        yhi = info_file.readline().strip().split()[1]  # Get the yhi value
+    return np.array([[0, 0], [float(xhi), float(yhi)]])
 
 
 def get_fixed_rings(path: Path) -> set[int]:
+    """
+    Reads the fixed rings from a file and returns them as a set of integers.
+
+    Args:
+        path: the path to the file containing the fixed rings
+
+    Raises:
+        TypeError: if a ring in the file is not an integer
+
+    Returns:
+        a set of fixed rings
+    """
     try:
         with open(path, "r") as fixed_rings_file:
             return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
@@ -107,20 +156,44 @@ class BSSData:
 
     @staticmethod
     def from_files(path: Path):
-        dimensions = get_info_data(path.joinpath("base_network_info.txt"))
-        base_nodes = get_nodes(path.joinpath("base_network_coords.txt"), "base")
-        ring_nodes = get_nodes(path.joinpath("dual_network_coords.txt"), "ring")
-        fill_neighbours(path.joinpath("base_network_connections.txt"), base_nodes, base_nodes, dimensions)
-        fill_neighbours(path.joinpath("dual_network_connections.txt"), ring_nodes, ring_nodes, dimensions)
-        fill_neighbours(path.joinpath("base_network_dual_connections.txt"), base_nodes, ring_nodes, dimensions)
-        fill_neighbours(path.joinpath("dual_network_dual_connections.txt"), ring_nodes, base_nodes, dimensions)
-        fixed_rings = get_fixed_rings(path.joinpath("fixed_rings.txt"))
-        base_network = BSSNetwork(base_nodes, "base", dimensions)
-        ring_network = BSSNetwork(ring_nodes, "ring", dimensions)
-        return BSSData(base_network, ring_network, dimensions, fixed_rings)
+        """
+        Imports a network from files
+
+        Args:
+            path: the path to the directory containing the network files
+
+        Raises:
+            ImportError: if the network cannot be imported
+
+        Returns:
+            a BSSData object of the imported network
+        """
+        try:
+            dimensions = get_info_data(path.joinpath("base_network_info.txt"))
+            base_nodes = get_nodes(path.joinpath("base_network_coords.txt"), "base")
+            ring_nodes = get_nodes(path.joinpath("dual_network_coords.txt"), "ring")
+            fill_neighbours(path.joinpath("base_network_connections.txt"), base_nodes, base_nodes, dimensions)
+            fill_neighbours(path.joinpath("dual_network_connections.txt"), ring_nodes, ring_nodes, dimensions)
+            fill_neighbours(path.joinpath("base_network_dual_connections.txt"), base_nodes, ring_nodes, dimensions)
+            fill_neighbours(path.joinpath("dual_network_dual_connections.txt"), ring_nodes, base_nodes, dimensions)
+            fixed_rings = get_fixed_rings(path.joinpath("fixed_rings.txt"))
+            base_network = BSSNetwork(base_nodes, "base", dimensions)
+            ring_network = BSSNetwork(ring_nodes, "ring", dimensions)
+            return BSSData(base_network, ring_network, dimensions, fixed_rings)
+        except (FileNotFoundError, TypeError, IndexError) as e:
+            raise ImportError(f"Error importing BSSData from files: {e}")
 
     @staticmethod
     def gen_hexagonal(num_rings: int) -> BSSData:
+        """
+        Creates a crystalline hexagonal network from scratch
+
+        Args:
+            num_rings: the number of rings in the network (will be rounded down to the nearest even square number)
+
+        Returns:
+            a BSSData object of the generated network
+        """
         bss_data = BSSData()
         length = rounded_even_sqrt(num_rings)
         dimensions = np.array([[0, 0], [np.sqrt(3) * length, 1.5 * length]])
@@ -216,23 +289,22 @@ class BSSData:
         self.base_network.dimensions = dimensions.copy()
         self.ring_network.dimensions = dimensions.copy()
 
-    def plot_radial_distribution(self) -> None:
+    def get_radial_distribution(self, num_bins: int = 100) -> tuple[np.ndarray, np.ndarray]:
         distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
-
-        # Calculate the KDE
         kde = gaussian_kde(distances_from_centre)
-        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
+        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, num_bins)
         density = kde(radii)
-
-        # Normalize by the area of the annulus
         bin_width = radii[1] - radii[0]
         areas = 2 * np.pi * radii * bin_width
         density_normalized = density / areas
+        return radii, density_normalized
 
+    def plot_radial_distribution(self, num_bins: int = 1000) -> None:
+        radii, density_normalized = self.get_radial_distribution(num_bins)
         plt.plot(radii, density_normalized, label="Base")
         plt.title("Radial distribution of nodes in the base network from the centre")
         plt.xlabel("Distance from centre (Bohr radii)")
-        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
+        plt.ylabel("Density (Atoms Bohr radii ^-2)")
         plt.show()
 
     def scale(self, scale_factor: float) -> None:
@@ -576,6 +648,12 @@ class BSSData:
 
     def draw_graph_pretty(self, title: str = "BSS Network", window_title: str = "BSS Network Viewer",
                           draw_dimensions: bool = False, threshold_size: int = 10) -> None:
+        """
+        Draws the network using matplot lib in a visually pleasing way
+
+        Args:
+
+        """
         if not self.ring_network.nodes:
             print("No nodes to draw.")
             return
@@ -597,7 +675,7 @@ class BSSData:
                 # Fixed rings are coloured red
                 red_patches.append(polygon)
             elif len(pbc_coords) >= threshold_size:
-                # Rings that are larger than the given threshhold are coloured white
+                # Rings that are larger than or equal to the given threshhold are coloured white
                 white_patches.append(polygon)
             else:
                 patches.append(polygon)
@@ -669,6 +747,9 @@ class BSSData:
         plt.gcf().canvas.draw()
 
     def get_ring_size_limits(self) -> tuple[int, int]:
+        """
+        Returns a tuple of min_ring_size and max_ring_size
+        """
         max_ring_size = max([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
         min_ring_size = min([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
         return min_ring_size, max_ring_size
