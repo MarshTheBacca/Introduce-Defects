@@ -59,8 +59,22 @@ class BSSNetwork:
                     self.nodes[neighbour].add_neighbour(self.nodes[node_index], self.dimensions)
 
     def translate(self, vector: np.ndarray) -> None:
+        """
+        Translates all nodes by the given vector, and wraps them around the periodic boundary conditions.
+
+        Args:
+            vector: The vector by which to translate the nodes.
+        """
         for node in self.nodes:
             node.translate(vector)
+        self.wrap_nodes()
+
+    def wrap_nodes(self) -> None:
+        width = self.dimensions[1][0] - self.dimensions[0][0]
+        height = self.dimensions[1][1] - self.dimensions[0][1]
+        for node in self.nodes:
+            node.coord[0] = self.dimensions[0][0] + (node.coord[0] - self.dimensions[0][0]) % width
+            node.coord[1] = self.dimensions[0][1] + (node.coord[1] - self.dimensions[0][1]) % height
 
     def scale(self, scale_factor: float) -> None:
         for node in self.nodes:
