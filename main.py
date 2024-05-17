@@ -8,7 +8,7 @@ import matplotlib
 from matplotlib import pyplot as plt
 from tabulate import tabulate
 
-from utils import (BSSData, DefectIntroducer, LAMMPSData, UserCancelledError,
+from utils import (BSSData, DefectIntroducerFigures, LAMMPSData, UserCancelledError,
                    confirm, get_valid_float, get_valid_int, get_valid_str)
 
 matplotlib.use('TkAgg')
@@ -137,7 +137,7 @@ def introduce_defects(networks_path: Path) -> None:
         except UserCancelledError:
             return
         bss_data = BSSData.gen_hexagonal(num_rings)
-    plotter = DefectIntroducer(bss_data, networks_path)
+    plotter = DefectIntroducerFigures(bss_data, networks_path)
     plotter.plot()
     if not plotter.closed_properly:
         print("User closed the plot window, exiting without saving...")
