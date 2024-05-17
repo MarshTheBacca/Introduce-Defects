@@ -144,6 +144,7 @@ def get_fixed_rings(path: Path) -> set[int]:
 
 @dataclass
 class BSSData:
+    path: Optional[Path] = None
     base_network: BSSNetwork = field(default_factory=lambda: BSSNetwork([], "base", np.array([[0, 0], [1, 1]])))
     ring_network: BSSNetwork = field(default_factory=lambda: BSSNetwork([], "ring", np.array([[0, 0], [1, 1]])))
     dimensions: np.ndarray = field(default_factory=lambda: np.array([[0, 0], [1, 1]]))
@@ -156,7 +157,7 @@ class BSSData:
 
         Args:
             path: the path to the directory containing the network files
-            fixed_rings_path: path to the fixed_rings.txt file
+            fixed_rings_path: path to the fixed_rings.txt file (defaults to fixed_rings.txt in the network directory)
 
         Raises:
             ImportError: if the network cannot be imported
@@ -175,7 +176,7 @@ class BSSData:
             fixed_rings = get_fixed_rings(path.joinpath("fixed_rings.txt") if fixed_rings_path is None else fixed_rings_path)
             base_network = BSSNetwork(base_nodes, "base", dimensions)
             ring_network = BSSNetwork(ring_nodes, "ring", dimensions)
-            return BSSData(base_network, ring_network, dimensions, fixed_rings)
+            return BSSData(path, base_network, ring_network, dimensions, fixed_rings)
         except (FileNotFoundError, TypeError, IndexError) as e:
             raise ImportError(f"Error importing BSSData from files: {e}")
 
@@ -303,11 +304,63 @@ class BSSData:
             return np.mean([np.linalg.norm(pbc_vector(node.coord, neighbour.coord, self.dimensions)) for neighbour in node.neighbours])
         raise InvalidNetworkException("No nodes in the base network that are not in a fixed ring")
 
+    def get_bond_length_info(self, refresh: bool = False) -> tuple[float, float]:
+        """
+        Gets the average bond length and standard deviation of the bond lengths in the network
+
+        Args:
+            refresh: whether to refresh the data from scratch
+
+        Returns:
+            the average bond length and the standard deviation of the bond lengths
+        """
+        info_path = self.path.joinpath("bond_length_info.txt")
+        if not refresh:
+            try:
+                with open(info_path, "r") as file:
+                    average_bond_length = float(file.readline().split(":")[1])
+                    standard_deviation = float(file.readline().split(":")[1])
+                    return average_bond_length, standard_deviation
+            except Exception as e:
+                print(f"Error reading file {info_path}: {e}")
+                print("Computing bond length distribution from scratch")
+        bond_lengths = [np.linalg.norm(pbc_vector(node.coord, neighbour.coord, self.dimensions))
+                        for node in self.base_network.nodes
+                        for neighbour in node.neighbours]
+        average_bond_length = np.mean(bond_lengths)
+        standard_deviation = np.std(bond_lengths)
+        try:
+            with open(info_path, "w") as file:
+                file.write(f"Average bond length: {average_bond_length}\n")
+                file.write(f"Standard deviation: {standard_deviation}\n")
+        except Exception as e:
+            print(f"Error writing file {info_path}: {e}")
+            print("Data not saved")
+        return average_bond_length, standard_deviation
+
     def re_center(self, node: BSSNode) -> None:
+        """
+        Re-center the network with a given node in the center
+
+        Args:
+            node: the node to re-center the network around
+        """
         self.translate((np.mean(self.dimensions, axis=0) - node.coord))
 
-    def get_radial_distribution(self, fixed_ring_center: bool = True, refresh: bool = False,
-                                path: Optional[Path] = None, bin_size: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
+    def _attempt_fixed_ring_recenter(self) -> None:
+        if len(self.fixed_rings) > 1:
+            print("Warning, fixed ring center requested but there are more than one fixed rings")
+            selected_fixed_ring = self.ring_network.nodes[list(self.fixed_rings)[0]]
+            print(f"Using {selected_fixed_ring}")
+            self.re_center(selected_fixed_ring)
+        elif len(self.fixed_rings) == 0:
+            print("Warning, fixed ring center requested but there are no fixed rings")
+            print("Leaving network unchanged")
+        else:
+            self.re_center(self.ring_network.nodes[list(self.fixed_rings)[0]])
+
+    def get_radial_distribution(self, fixed_ring_center: bool = True,
+                                refresh: bool = False, bin_size: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Gets the radial distribution of nodes in the network from the centre.
         If fixed_ring_center is enabled, the NETWORK WILL BE RE-CENTERED TO THE MIDDLE OF THE FIXED_RING
@@ -315,44 +368,28 @@ class BSSData:
         Args:
             fixed_ring_center: whether to use the fixed ring centre or the centre of the dimensions
             path: the path to the file to save the radial distribution to (and read from if it exists)
-            bin_size: the size of the bins for the radial distribution (default is average bond length)
+            bin_size: the size of the bins for the radial distribution (default is average bond length / 10)
 
         Returns:
             the radii and the density of nodes at each radius
         """
         # Try to get existing data to save computation time
-        if not refresh and path is not None and path.is_file():
+        info_path = self.path.joinpath("radial_distribution.txt")
+        if not refresh:
             try:
-                array = np.genfromtxt(path)
+                array = np.genfromtxt(info_path)
                 return array[:, 0], array[:, 1]
             except Exception as e:
-                print(f"Error reading file {path}: {e}")
+                print(f"Error reading file {info_path}: {e}")
                 print("Computing radial distribution from scratch")
         # Bin size is the length of each radius bin
         if bin_size is None:
             bin_size = self.get_bond_length_estimate() / 10
         # Decide wether we're using the centre of the network or the centre of a fixed ring
         if fixed_ring_center:
-            if len(self.fixed_rings) != 1:
-                print("Warning, fixed ring center requested but there is not exactly one fixed ring")
-                print("Using centre of dimensions instead")
-            else:
-                rixed_ring_coord = self.ring_network.nodes[list(self.fixed_rings)[0]].coord
-                center_coord = np.mean(self.dimensions, axis=0)
-                self.translate((center_coord - rixed_ring_coord))
-        center_coord = np.mean(self.dimensions, axis=0)
-        dimension_ranges = self.dimensions[1] - self.dimensions[0]
-        # Get the maximum distance from the centre to any node (it'll be at one of the corners)
-        max_distance = max(np.linalg.norm(node.coord - center_coord) for node in self.base_network.nodes)
-        # Now mirror all coordinates in a 3 x 3 grid
-        mirrored_nodes = (node.coord + np.array([i, j]) * dimension_ranges
-                          for i in [-1, 0, 1] for j in [-1, 0, 1]
-                          for node in self.base_network.nodes)
-        # Get all the distances that are less than or equal to the maximum distance
-        # This ensures there is no underestimation in the density at the corners of the network
-        distances_from_centre = (np.linalg.norm(node - center_coord)
-                                 for node in mirrored_nodes
-                                 if np.linalg.norm(node - center_coord) <= max_distance)
+            self._attempt_fixed_ring_recenter()
+        distances_from_centre = self.get_distances(fixed_ring_center)
+        max_distance = max(distances_from_centre)
         kde = gaussian_kde(list(distances_from_centre), bw_method=0.1)
         radii = np.arange(0, max_distance, bin_size)
         density = kde(radii)
@@ -360,39 +397,79 @@ class BSSData:
         areas = 2 * np.pi * radii * bin_width
         areas = np.where(areas == 0, 1, areas)  # avoid division by zero
         density_normalized = density / areas
-        if path is not None:
-            try:
-                np.savetxt(path, np.column_stack((radii, density_normalized)))
-            except Exception as e:
-                print(f"Error writing file {path}: {e}")
-                print("Data not saved")
+        try:
+            np.savetxt(info_path, np.column_stack((radii, density_normalized)))
+        except Exception as e:
+            print(f"Error writing file {info_path}: {e}")
+            print("Data not saved")
         return radii, density_normalized
 
-    def get_ring_size_distribution(self, fixed_ring_center: bool = True, refresh: bool = False,
-                                   path: Optional[Path] = None, bin_size: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
+    def get_ring_size_distances(self, fixed_ring_center: bool = True) -> np.ndarray:
+        """
+        Gets the distance of each ring node from the centre of the network and the size of the ring
+        with a correction for corner density underestimation
+
+        Args:
+            fixed_ring_center: whether to use the fixed ring centre or the centre of the dimensions
+
+        Returns:
+            the distances of each ring node from the centre of the network and size of the ring
+        """
+        if fixed_ring_center:
+            self._attempt_fixed_ring_recenter()
+        dimension_ranges = self.dimensions[1] - self.dimensions[0]
+        centre_coord = np.mean(self.dimensions, axis=0)
+        max_distance = max(np.linalg.norm(node.coord - centre_coord) for node in self.ring_network.nodes)
+        # Now mirror all coordinates in a 3 x 3 grid
+        mirrored_nodes = [(node.coord + np.array([i, j]) * dimension_ranges, len(node.ring_neighbours))
+                          for i in [-1, 0, 1] for j in [-1, 0, 1]
+                          for node in self.ring_network.nodes]
+        # Get all the distances that are less than or equal to the maximum distance
+        # This ensures there is no underestimation in the density at the corners of the network
+        return np.array([[np.linalg.norm(coord - centre_coord), size] for coord, size in mirrored_nodes
+                        if np.linalg.norm(coord - centre_coord) <= max_distance])
+
+    def get_distances(self, fixed_ring_center: bool = True) -> np.ndarray:
+        """
+        Gets the distance of each node from the centre of the network with a correction for corner density underestimation
+
+        Args:
+            fixed_ring_center: whether to use the fixed ring centre or the centre of the dimensions
+
+        Returns:
+            the distances of each node from the centre of the network
+        """
+        if fixed_ring_center:
+            self._attempt_fixed_ring_recenter()
+        dimension_ranges = self.dimensions[1] - self.dimensions[0]
+        centre_coord = np.mean(self.dimensions, axis=0)
+        max_distance = max(np.linalg.norm(node.coord - centre_coord) for node in self.ring_network.nodes)
+        # Now mirror all coordinates in a 3 x 3 grid
+        mirrored_nodes = (node.coord + np.array([i, j]) * dimension_ranges
+                          for i in [-1, 0, 1] for j in [-1, 0, 1]
+                          for node in self.ring_network.nodes)
+        # Get all the distances that are less than or equal to the maximum distance
+        # This ensures there is no underestimation in the density at the corners of the network
+        return np.array([np.linalg.norm(node - centre_coord) for node in mirrored_nodes
+                         if np.linalg.norm(node - centre_coord) <= max_distance])
+
+    def get_ring_size_distribution(self, fixed_ring_center: bool = True,
+                                   refresh: bool = False, bin_size: Optional[float] = None) -> tuple[np.ndarray, np.ndarray]:
         # Try to get existing data to save computation time
-        if not refresh and path is not None and path.is_file():
+        info_path = self.path.joinpath("ring_size_distribution.txt")
+        if not refresh:
             try:
-                array = np.genfromtxt(path)
+                array = np.genfromtxt(info_path)
                 return array[:, 0], array[:, 1]
             except Exception as e:
-                print(f"Error reading file {path}: {e}")
+                print(f"Error reading file {info_path}: {e}")
                 print("Computing ring size distribution from scratch")
         # Bin size is the length of each radius bin
         if bin_size is None:
             bin_size = self.get_bond_length_estimate() / 10
 
         if fixed_ring_center:
-            if len(self.fixed_rings) > 1:
-                print("Warning, fixed ring center requested but there are more than one fixed rings")
-                selected_fixed_ring = self.ring_network.nodes[list(self.fixed_rings)[0]]
-                print(f"Using {selected_fixed_ring}")
-                self.re_center(selected_fixed_ring)
-            elif len(self.fixed_rings) == 0:
-                print("Warning, fixed ring center requested but there are no fixed rings")
-                print("Leaving network unchanged")
-            else:
-                self.re_center(self.ring_network.nodes[list(self.fixed_rings)[0]])
+            self._attempt_fixed_ring_recenter()
         centre_coord = np.mean(self.dimensions, axis=0)
         # Calculate the distance and ring size for each node
         info = [(np.linalg.norm(node.coord - centre_coord), len(node.ring_neighbours)) for node in self.ring_network.nodes]
@@ -413,24 +490,23 @@ class BSSData:
             avg_ring_size = np.mean(ring_sizes)
             radii.append(bins[bin_index - 1] + bin_size / 2)  # use the center of the bin as the radius
             avg_ring_sizes.append(avg_ring_size)
-        if path is not None:
-            try:
-                np.savetxt(path, np.column_stack((radii, avg_ring_sizes)))
-            except Exception as e:
-                print(f"Error writing file {path}: {e}")
-                print("Data not saved")
+        try:
+            np.savetxt(info_path, np.column_stack((radii, avg_ring_sizes)))
+        except Exception as e:
+            print(f"Error writing file {info_path}: {e}")
+            print("Data not saved")
         return np.array(radii), np.array(avg_ring_sizes)
 
-    def plot_radial_distribution(self, fixed_ring_center: bool = True, path: Optional[Path] = None, bin_size: Optional[float] = None) -> None:
+    def plot_radial_distribution(self, fixed_ring_center: bool = True, refresh: bool = False, bin_size: Optional[float] = None) -> None:
         """
         Plots the radial distribution of nodes in the network from the centre (does not clear or show plot)
 
         Args:
             fixed_ring_center: whether to use the fixed ring centre or the centre of the dimensions
-            path: the path to the file to save the radial distribution to (and read from if it exists)
+            refresh: whether to refresh the data from scratch
             bin_size: the size of the bins for the radial distribution (default is average bond length)
         """
-        radii, density_normalized = self.get_radial_distribution(fixed_ring_center, path, bin_size)
+        radii, density_normalized = self.get_radial_distribution(fixed_ring_center, refresh, bin_size)
         plt.plot(radii, density_normalized)
         plt.title("Radial distribution of nodes in the base network from the centre")
         plt.xlabel("Distance from centre (Bohr radii)")
@@ -1024,7 +1100,7 @@ class BSSData:
                 copied_ring_nodes[node.id].add_neighbour(copied_ring_nodes[neighbour.id], self.dimensions)
             for ring_neighbour in node.ring_neighbours:
                 copied_ring_nodes[node.id].add_ring_neighbour(copied_base_nodes[ring_neighbour.id], self.dimensions)
-        return BSSData(BSSNetwork(copied_base_nodes, "base", np.copy(self.dimensions)),
+        return BSSData(self.path, BSSNetwork(copied_base_nodes, "base", np.copy(self.dimensions)),
                        BSSNetwork(copied_ring_nodes, "ring", np.copy(self.dimensions)),
                        np.copy(self.dimensions), copy.copy(self.fixed_rings))
 
