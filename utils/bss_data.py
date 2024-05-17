@@ -6,21 +6,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib.patches import Patch
+from matplotlib.axes import Axes
 from matplotlib.backend_bases import KeyEvent, ResizeEvent
 from matplotlib.collections import PatchCollection
+from matplotlib.colors import ListedColormap, Normalize, to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
+from matplotlib.text import Text
 from matplotlib.ticker import MaxNLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy.stats import gaussian_kde
 
 from .bss_network import BSSNetwork
 from .bss_node import BSSNode
-from .other_utils import (find_common_elements, pbc_vector, rounded_even_sqrt,
-                          settify)
+from .other_utils import (find_common_elements, is_pbc_bond, pbc_vector,
+                          rounded_even_sqrt, settify)
 
 
 class InvalidNetworkException(Exception):
@@ -135,17 +140,6 @@ def get_fixed_rings(path: Path) -> set[int]:
             return {int(ring.strip()) for ring in fixed_rings_file.readlines() if ring.strip()}
     except FileNotFoundError:
         return set()
-
-
-def is_pbc_bond(node_1: BSSNode, node_2: BSSNode, dimensions: np.ndarray) -> bool:
-    """
-    Identifies bonds that cross the periodic boundary. So if the length of the bond is 
-    more than 10% longer than the distance between the two nodes with periodic boundary conditions,
-    then it is considered a periodic bond.
-    """
-    if np.linalg.norm(node_1.coord - node_2.coord) > np.linalg.norm(pbc_vector(node_1.coord, node_2.coord, dimensions)) * 1.1:
-        return True
-    return False
 
 
 @dataclass
@@ -538,18 +532,30 @@ class BSSData:
         self.merge_rings(rings_to_merge, np.copy(node.coord))
         self.delete_node(node)
 
-    def manual_bond_addition_deletion(self, node_1: BSSNode, node_2: BSSNode) -> None:
+    def manual_bond_addition_deletion(self, node_1: BSSNode, node_2: BSSNode) -> bool:
+        """
+        Creates or removes a bond between two nodes. If the nodes are already bonded, the bond is removed and the rings are merged.
+        If the nodes are not bonded, the bond is added and the rings are split.
+
+        Returns:
+            True if a bond was added, False if a bond was removed
+
+        Args:
+            node_1: The first node
+            node_2: The second node
+        """
         if node_1 == node_2:
             raise ValueError("Cannot bond or remove bond between the same node.")
         if node_1 not in node_2.neighbours:  # Add the bond and create a new ring node
             new_ring_1, new_ring_2, ring_to_remove = self.get_resulting_rings(node_1, node_2)
             self.add_bond(node_1, node_2)
             self.split_ring(new_ring_1, new_ring_2, ring_to_remove)
-            return
+            return True
         # If it's already bonded, remove the bond and merge the rings
         common_rings: list[BSSNode] = find_common_elements([node_1.ring_neighbours, node_2.ring_neighbours])
         self.delete_bond(node_1, node_2)
         self.merge_rings(common_rings)
+        return False
 
     def add_bond(self, node_1: BSSNode, node_2: BSSNode) -> None:
         if node_1 == node_2:
@@ -584,6 +590,15 @@ class BSSData:
 
     @staticmethod
     def check_undercoordinated(undercoordinated_nodes: list[BSSNode], ring_walk: list[BSSNode]) -> None:
+        """
+        Checks to see if all of the following is false:
+        1) Odd number of UC nodes
+        2) Three consecutive UC nodes in the ring walk
+        3) Odd number of UC nodes between 'islands'
+
+        Raises:
+            InvalidUndercoordinatedNodesException: If any of the above conditions are true
+        """
         if len(undercoordinated_nodes) % 2 != 0:
             raise InvalidUndercoordinatedNodesException("Number of undercoordinated nodes is odd, so cannot bond them.")
         # Check there are no three consecutive undercoordinated nodes in the ring walk
@@ -615,6 +630,9 @@ class BSSData:
 
     @staticmethod
     def arrange_undercoordinated(undercoordinated_nodes: list[BSSNode]) -> tuple[list[BSSNode], list[BSSNode]]:
+        """
+        Arranges UC nodes in order of the ring walk and returns the ring walk
+        """
         common_rings = find_common_elements([node.ring_neighbours for node in undercoordinated_nodes])
         if len(common_rings) != 1:
             raise InvalidUndercoordinatedNodesException("Undercoordinated nodes do not share a common ring, so cannot bond them.")
@@ -638,8 +656,7 @@ class BSSData:
             return potential_network_2
         elif potential_network_2.flopped:
             return potential_network_1
-        else:
-            return BSSData.compare_networks(potential_network_1, potential_network_2)
+        return BSSData.compare_networks(potential_network_1, potential_network_2)
 
     @staticmethod
     def compare_networks(network_1: BSSData, network_2: BSSData) -> BSSData:
@@ -720,30 +737,6 @@ class BSSData:
         self.delete_node(ring_to_remove)
         self.add_bond(new_ring_node_1, new_ring_node_2)
 
-    @property
-    def graph(self) -> nx.Graph:
-        # Assumes base-ring connections are the same as ring-base connections
-        graph = nx.Graph()
-        for node in self.base_network.nodes:
-            graph.add_node(node.id, pos=(node.x, node.y),
-                           source='base_network')
-        for bond in self.base_network.bonds:
-            if bond.length < 2 * self.base_network.avg_bond_length:
-                graph.add_edge(bond.node_1.id, bond.node_2.id,
-                               source='base_network')
-        for bond in self.base_network.ring_bonds:
-            if bond.length < 2 * self.base_network.avg_ring_bond_length:
-                graph.add_edge(bond.node_1.id, self.base_network.num_nodes +
-                               bond.node_2.id, source='base_ring_bonds')
-        for node in self.ring_network.nodes:
-            graph.add_node(self.base_network.num_nodes + node.id,
-                           pos=(node.x, node.y), source='ring_network')
-        for bond in self.ring_network.bonds:
-            if bond.length < 2 * self.ring_network.avg_bond_length:
-                graph.add_edge(self.base_network.num_nodes + bond.node_1.id,
-                               self.base_network.num_nodes + bond.node_2.id, source='ring_network')
-        return graph
-
     def draw_graph(self, base_nodes: bool = True, ring_nodes: bool = False,
                    base_bonds: bool = True, ring_bonds: bool = False, base_ring_bonds: bool = False,
                    base_labels: bool = False, ring_labels: bool = False, offset: float = 0.2) -> None:
@@ -762,18 +755,18 @@ class BSSData:
             for node in self.base_network.nodes:
                 for neighbour in node.neighbours:
                     if neighbour.id > node.id:
-                        if not is_pbc_bond(node, neighbour, self.dimensions):
+                        if not is_pbc_bond(node.coord, neighbour.coord, self.dimensions):
                             graph.add_edge(node.id, neighbour.id, source='base_network')
         if ring_bonds:
             for node in self.ring_network.nodes:
                 for neighbour in node.neighbours:
                     if neighbour.id > node.id:
-                        if not is_pbc_bond(node, neighbour, self.dimensions):
+                        if not is_pbc_bond(node.coord, neighbour.coord, self.dimensions):
                             graph.add_edge(node.id + id_shift, neighbour.id + id_shift, source='ring_network')
         if base_ring_bonds:
             for node in self.ring_network.nodes:
                 for neighbour in node.ring_neighbours:
-                    if not is_pbc_bond(node, neighbour, self.dimensions):
+                    if not is_pbc_bond(node.coord, neighbour, self.dimensions):
                         graph.add_edge(node.id + id_shift, neighbour.id, source='base_ring_bonds')
 
         node_colours = ['red' if data['source'] == 'base_network' else 'blue' for _, data in graph.nodes(data=True)]
@@ -790,10 +783,7 @@ class BSSData:
         pos = nx.get_node_attributes(graph, "pos")
         pos_labels = {node: (x + offset, y + offset) for node, (x, y) in pos.items()}
         nx.draw(graph, pos, node_color=node_colours, edge_color=edge_colours, node_size=node_sizes, width=edge_widths)
-        plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
-        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
-        plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
-        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
+        self.draw_dimensions()
 
         if base_labels:
             nx.draw_networkx_labels(graph, pos_labels, labels={node.id: node.id for node in self.base_network.nodes},
@@ -804,6 +794,91 @@ class BSSData:
             nx.draw_networkx_labels(graph, pos_labels, labels={node.id + id_shift: node.id for node in self.ring_network.nodes},
                                     font_size=7, font_color="purple")
         plt.gca().set_aspect('equal', adjustable='box')
+
+    def get_ring_colours_1(self) -> list[tuple[float, float, float, float]]:
+        colour_maps = ["YlGnBu", "YlGnBu", "GnBu", "Greys", "YlOrRd", "YlOrRd", "RdPu", "RdPu"]
+        colours = [0.8, 0.7, 0.6, 0.3, 0.3, 0.5, 0.4, 0.7]
+        ring_colours = [to_rgba("white")] * 3
+        ring_colours.extend(cm.get_cmap(cmap)(colour) for cmap, colour in zip(colour_maps, colours))
+        ring_colours.extend([to_rgba("black")] * 30)
+        return ring_colours
+
+    def get_ring_colours_2(self) -> list[tuple[float, float, float, float]]:
+        map_lower = ListedColormap(cm.get_cmap("Blues_r")(np.arange(20, 100)))
+        map_upper = ListedColormap(cm.get_cmap("Reds")(np.arange(50, 100)))
+        average_ring_size = 6
+        norm_lower = Normalize(vmin=average_ring_size - 3, vmax=average_ring_size)
+        norm_upper = Normalize(vmin=average_ring_size, vmax=average_ring_size + 6)
+        colour_mean = cm.get_cmap("Greys")(50)
+
+        return [to_rgba("white") if i < 3 else
+                colour_mean if np.abs(i - average_ring_size) < 1e-6 else
+                map_lower(norm_lower(i)) if i < average_ring_size else
+                map_upper(norm_upper(i)) for i in range(340)]
+
+    def get_ring_colours_3(self) -> list[tuple[float, float, float, float]]:
+        colormaps = ["GnBu", "Greens", "Blues", "Greys", "Reds", "YlOrBr", "PuRd", "RdPu"]
+        color_values = [140, 100, 150, 90, 105, 100, 100, 80]
+        ring_colours = [to_rgba("white")] * 3
+        ring_colours.extend(cm.get_cmap(cmap)(value) for cmap, value in zip(colormaps, color_values))
+        ring_colours.extend([to_rgba("black")] * 30)
+        return ring_colours
+
+    def get_ring_colours_4(self) -> list[tuple[float, float, float, float]]:
+        ring_colours = [to_rgba("white")] * 3
+        ring_colours.extend(cm.get_cmap("cividis")(i) for i in np.linspace(0, 1, 8))
+        ring_colours.extend(cm.get_cmap("YlOrRd")(i) for i in np.linspace(0.4, 1, 8))
+        return ring_colours
+
+    def draw_graph_pretty_figures(self, draw_dimensions: bool = False, draw_legend: bool = False) -> None:
+        if not self.ring_network.nodes:
+            print("No nodes to draw.")
+            return
+        ax = plt.gca()
+        patches, colours, lines, dashed_patches = [], [], [], []
+        ring_colours = self.get_ring_colours_4()
+        for ring_node in self.ring_network.nodes:
+            pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions) for base_node in ring_node.ring_neighbours])
+            polygon = Polygon(pbc_coords, closed=True)
+            if ring_node.id in self.fixed_rings:
+                # Fixed rings are coloured red
+                polygon.set_hatch("x")
+                polygon.set_edgecolor("grey")
+                polygon.set_facecolor("white")
+                dashed_patches.append(polygon)
+            else:
+                patches.append(polygon)
+                # Use the colormap to get the color for the ring size
+                try:
+                    colours.append(ring_colours[len(pbc_coords)])
+                except IndexError:
+                    # Colours out of range are coloured white
+                    colours.append(to_rgba("white"))
+
+            for i in range(len(pbc_coords)):
+                line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]],
+                              [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
+                lines.append(line)
+
+        ax.add_collection(PatchCollection(patches, facecolors=colours, edgecolor='black', alpha=0.5))
+        for dashed_patch in dashed_patches:
+            ax.add_patch(dashed_patch)
+        for line in lines:
+            ax.add_line(line)
+        if draw_dimensions:
+            self.draw_dimensions()
+        if draw_legend:
+            legend_patch = Patch(facecolor="white", edgecolor="black", hatch="x")
+            ax.legend([legend_patch], ["Fixed Ring"], loc="upper right")
+        ax.autoscale_view()
+        ax.set_aspect('equal', adjustable='box')
+        ax.axis('off')
+
+    def draw_dimensions(self):
+        plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
+        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
+        plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
+        plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
 
     def draw_graph_pretty(self, title: str = "BSS Network", window_title: str = "BSS Network Viewer",
                           draw_dimensions: bool = False, threshold_size: int = 10) -> None:
@@ -816,19 +891,27 @@ class BSSData:
         if not self.ring_network.nodes:
             print("No nodes to draw.")
             return
-
         plt.axis("off")
         ax = plt.gca()
         fig = plt.gcf()
         fig.canvas.manager.set_window_title(window_title)
         fig.suptitle(title)
-        patches = []
-        colours = []
-        lines = []
-        white_patches = []
-        red_patches = []
+        patches, colours, lines, white_patches, red_patches = self.create_patches_and_lines(threshold_size)
+        patch_collection = self.add_patches_and_lines_to_plot(ax, patches, colours, red_patches, white_patches, lines)
+        if draw_dimensions:
+            self.draw_dimensions()
+        ax.set_aspect('equal', adjustable='box')
+        ax.autoscale_view()
+        colour_bar_axes, label = self.add_colorbar(ax, patch_collection)
+        self.connect_events(colour_bar_axes, label)
+        # Trigger the resize event to set the initial font size.
+        plt.gcf().canvas.draw()
+
+    def create_patches_and_lines(self, threshold_size: int):
+        patches, colours, lines, white_patches, red_patches = [], [], [], [], []
         for ring_node in self.ring_network.nodes:
-            pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions) for base_node in ring_node.ring_neighbours])
+            pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions)
+                                   for base_node in ring_node.ring_neighbours])
             polygon = Polygon(pbc_coords, closed=True)
             if ring_node.id in self.fixed_rings:
                 # Fixed rings are coloured red
@@ -840,10 +923,11 @@ class BSSData:
                 patches.append(polygon)
                 colours.append(len(pbc_coords))
             for i in range(len(pbc_coords)):
-                line = Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]],
-                              [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black")
-                lines.append(line)
+                lines.append(Line2D([pbc_coords[i, 0], pbc_coords[(i + 1) % len(pbc_coords), 0]],
+                                    [pbc_coords[i, 1], pbc_coords[(i + 1) % len(pbc_coords), 1]], color="black"))
+        return patches, colours, lines, white_patches, red_patches
 
+    def add_patches_and_lines_to_plot(self, ax, patches, colours, red_patches, white_patches, lines):
         # Create a PatchCollection from the list of patches
         patch_collection = PatchCollection(patches, cmap='cividis', alpha=0.4)
 
@@ -858,35 +942,33 @@ class BSSData:
         # Add the white patches to the plot
         for white_patch in white_patches:
             ax.add_patch(Polygon(white_patch.get_xy(), closed=True, color='white'))
+
         # Add the lines to the plot
         for line in lines:
             ax.add_line(line)
-            if draw_dimensions:
-                plt.plot([self.dimensions[0][0], self.dimensions[0][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # left line
-                plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[0][1]], "--", color="gray")  # bottom line
-                plt.plot([self.dimensions[1][0], self.dimensions[1][0]], [self.dimensions[0][1], self.dimensions[1][1]], "--", color="gray")  # right line
-                plt.plot([self.dimensions[0][0], self.dimensions[1][0]], [self.dimensions[1][1], self.dimensions[1][1]], "--", color="gray")  # top line
-            ax.set_aspect('equal', adjustable='box')
-            ax.autoscale_view()
+        return patch_collection
 
-        colorbar_axes = inset_axes(ax,
-                                   width="100%",  # width = 100% of parent_bbox width
-                                   height="5%",  # height : 5%
-                                   loc='lower center',
-                                   bbox_to_anchor=(0.0, -0.05, 1, 1),
-                                   bbox_transform=ax.transAxes,
-                                   borderpad=0)
+    def add_colorbar(self, ax: Axes, patch_collection: PatchCollection):
+        colour_bar_axes = inset_axes(ax,
+                                     width="100%",  # width = 100% of parent_bbox width
+                                     height="5%",
+                                     loc='lower center',
+                                     bbox_to_anchor=(0.0, -0.05, 1, 1),
+                                     bbox_transform=ax.transAxes,
+                                     borderpad=0)
 
         # Create the colorbar in the new axes.
-        colour_bar = plt.colorbar(patch_collection, cax=colorbar_axes, orientation='horizontal', pad=0.2)
+        colour_bar = plt.colorbar(patch_collection, cax=colour_bar_axes, orientation='horizontal', pad=0.2)
         colour_bar.locator = MaxNLocator(integer=True)
         colour_bar.update_ticks()
         # Set the label for the colorbar.
         label = plt.gcf().text(0.515, 0.12, "Ring Size", ha='center')
+        return colour_bar_axes, label
 
+    def connect_events(self, colour_bar_axes: Axes, label: Text) -> None:
         def on_resize(event: ResizeEvent):
             # Get the height of the axes in pixels.
-            axes_height = colorbar_axes.get_window_extent().height
+            axes_height = colour_bar_axes.get_window_extent().height
             # Calculate the new font size (you may need to adjust the scaling factor).
             new_font_size = axes_height / 2.5
             # Update the title font size.
@@ -902,9 +984,6 @@ class BSSData:
         plt.gcf().canvas.mpl_connect('key_press_event', on_key_press)
         plt.gcf().canvas.mpl_connect('resize_event', on_resize)
 
-        # Trigger the resize event to set the initial font size.
-        plt.gcf().canvas.draw()
-
     def get_ring_size_limits(self) -> tuple[int, int]:
         """
         Returns a tuple of min_ring_size and max_ring_size
@@ -913,21 +992,24 @@ class BSSData:
         min_ring_size = min([len(ring_node.ring_neighbours) for ring_node in self.ring_network.nodes])
         return min_ring_size, max_ring_size
 
-    @property
-    def xlo(self):
-        return self.dimensions[0, 0]
+    def plot_radial_distribution(self) -> None:
+        distances_from_centre = [np.linalg.norm(node.coord - np.mean(self.dimensions, axis=0)) for node in self.base_network.nodes]
 
-    @property
-    def xhi(self):
-        return self.dimensions[1, 0]
+        # Calculate the KDE
+        kde = gaussian_kde(distances_from_centre)
+        radii = np.linspace(0, np.linalg.norm(self.dimensions[1] - self.dimensions[0]) / 2, 1000)
+        density = kde(radii)
 
-    @property
-    def ylo(self):
-        return self.dimensions[0, 1]
+        # Normalize by the area of the annulus
+        bin_width = radii[1] - radii[0]
+        areas = 2 * np.pi * radii * bin_width
+        density_normalized = density / areas
 
-    @property
-    def yhi(self):
-        return self.dimensions[1, 1]
+        plt.plot(radii, density_normalized, label="Base")
+        plt.title("Radial distribution of nodes in the base network from the centre")
+        plt.xlabel("Distance from centre (Bohr radii)")
+        plt.ylabel("Density (Atoms Bohr radii ^ - 2)")
+        plt.show()
 
     def __deepcopy__(self: BSSData, memo) -> BSSData:
         copied_base_nodes: list[BSSNode] = [BSSNode(coord=np.copy(node.coord), id=id, type="base") for id, node in enumerate(self.base_network.nodes)]
@@ -947,6 +1029,6 @@ class BSSData:
                        np.copy(self.dimensions), copy.copy(self.fixed_rings))
 
     def __repr__(self) -> str:
-        string = f"BSSData with dimensions:\nxlo: {self.xlo}\txhi: {self.xhi}\tylo: {self.ylo}\tyhi: {self.yhi}\n"
+        string = f"BSSData with dimensions:\nxlo: {self.dimensions[0][0]}\txhi: {self.dimensions[1][0]}\tylo: {self.dimensions[0][1]}\tyhi: {self.dimensions[1][1]}\n"
         string += f"Base network:\n{self.base_network}\nRing network:\n{self.ring_network}"
         return string
