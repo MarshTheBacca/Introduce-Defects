@@ -63,3 +63,21 @@ def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarra
     angle = np.degrees(angle)
     # Return the acute angle
     return min(angle, 180 - angle)
+
+
+def is_pbc_bond(coord_1: np.ndarray, coord_2: np.ndarray, dimensions: np.ndarray) -> bool:
+    """
+    Identifies bonds that cross the periodic boundary. If the length of the bond is 
+    more than 10% longer than the distance between the two nodes with periodic boundary conditions,
+    then it is considered a periodic bond.
+
+    Args:
+        coord_1: np.ndarray, coordinates of the first node
+        coord_2: np.ndarray, coordinates of the second node
+
+    Returns:
+        bool, True if the bond is periodic, False otherwise
+    """
+    if np.linalg.norm(coord_1 - coord_2) > np.linalg.norm(pbc_vector(coord_1, coord_2, dimensions)) * 1.1:
+        return True
+    return False
