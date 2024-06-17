@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Generator
 
 import networkx as nx
 import numpy as np
@@ -10,7 +10,7 @@ from scipy.spatial import KDTree
 
 from .bss_bond import BSSBond
 from .bss_node import BSSNode
-from .other_utils import calculate_angle
+from .other_utils import calculate_angle, pbc_vector
 
 NETWORK_TYPE_MAP = {"base": "base_network", "ring": "dual_network"}
 
@@ -58,6 +58,19 @@ class BSSNetwork:
                     self.nodes[node_index].add_neighbour(self.nodes[neighbour], self.dimensions)
                     self.nodes[neighbour].add_neighbour(self.nodes[node_index], self.dimensions)
 
+    def get_edge_lengths(self) -> np.ndarray:
+        """
+        Gets the lengths of all the edges in the network.
+
+        Returns:
+            np.ndarray: An array of the lengths of the edges in the network.
+        """
+        lengths = []
+        for node in self.nodes:
+            for neighbour in node.neighbours:
+                lengths.append(np.linalg.norm(pbc_vector(node.coord, neighbour.coord, self.dimensions)))
+        return np.array(lengths)
+
     def translate(self, vector: np.ndarray) -> None:
         """
         Translates all nodes by the given vector, and wraps them around the periodic boundary conditions.
@@ -91,11 +104,11 @@ class BSSNetwork:
     def get_average_bond_length(self) -> float:
         return np.mean([bond.pbc_length(self.dimensions) for bond in self.bonds])
 
-    @property
+    @ property
     def kdtree(self):
         return KDTree(np.array([[node.x, node.y] for node in self.nodes]))
 
-    @property
+    @ property
     def bonds(self) -> list[BSSBond]:
         """
         Computationally expensive, do not use regularly.
@@ -108,7 +121,7 @@ class BSSNetwork:
                     bonds.append(bond)
         return bonds
 
-    @property
+    @ property
     def ring_bonds(self) -> list[BSSBond]:
         bonds = []
         for node in self.nodes:
@@ -116,7 +129,7 @@ class BSSNetwork:
                 bonds.append(BSSBond(node, neighbour))
         return bonds
 
-    @property
+    @ property
     def graph(self) -> nx.Graph:
         graph = nx.Graph()
         for node in self.nodes:
@@ -126,7 +139,7 @@ class BSSNetwork:
                 graph.add_edge(bond.node_1.id, bond.node_2.id)
         return graph
 
-    def get_angles(self) -> Iterator[tuple[BSSNode, BSSNode, BSSNode]]:
+    def get_angles(self) -> Generator[tuple[BSSNode, BSSNode, BSSNode], None, None]:
         for node in self.nodes:
             for angle in node.get_angles():
                 yield angle
@@ -172,39 +185,59 @@ class BSSNetwork:
     def export_ring_bonds(self, path: Path) -> None:
         self.export_bonds(path, "ring_neighbours")
 
-    @property
+    def get_assortativity_distribution(self) -> np.ndarray:
+        """
+        Gets a list of the number of neighbours of each node and the number of neighbours of each neighbour.
+        """
+        assortativity_distribution = []
+        for node in self.nodes:
+            for neighbour in node.neighbours:
+                assortativity_distribution.append([len(node.neighbours), len(neighbour.neighbours)])
+        return np.array(assortativity_distribution)
+
+    def get_pearsons(self) -> float:
+        """
+        Gets the pearsons correlation coefficient of the network
+        """
+        assortativity_distribution = self.get_assortativity_distribution()
+        pearsons_coeff = np.corrcoef(assortativity_distribution.T)[0, 1]
+        if pearsons_coeff < -1 or pearsons_coeff > 1:
+            raise ValueError(f"Out of range pearsons correlation coefficient: {pearsons_coeff}")
+        return pearsons_coeff
+
+    @ property
     def num_nodes(self):
         return len(self.nodes)
 
-    @property
+    @ property
     def num_bonds(self):
         return len(self.bonds)
 
-    @property
+    @ property
     def num_ring_bonds(self):
         return len(self.ring_bonds)
 
-    @property
+    @ property
     def max_connections(self):
         return max([node.num_neighbours for node in self.nodes])
 
-    @property
+    @ property
     def max_ring_connections(self):
         return max([node.num_ring_neighbours for node in self.nodes])
 
-    @property
+    @ property
     def node_xlo(self):
         return min([node.x for node in self.nodes])
 
-    @property
+    @ property
     def node_xhi(self):
         return max([node.x for node in self.nodes])
 
-    @property
+    @ property
     def node_ylo(self):
         return min([node.y for node in self.nodes])
 
-    @property
+    @ property
     def node_yhi(self):
         return max([node.y for node in self.nodes])
 
