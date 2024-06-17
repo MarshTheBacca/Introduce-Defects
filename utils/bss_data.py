@@ -28,6 +28,13 @@ from .other_utils import (find_common_elements, is_pbc_bond, pbc_vector,
                           rounded_even_sqrt, settify)
 
 
+def get_ring_colours_4() -> list[tuple[float, float, float, float]]:
+    ring_colours = [to_rgba("white")] * 3
+    ring_colours.extend(cm.get_cmap("cividis")(i) for i in np.linspace(0, 1, 8))
+    ring_colours.extend(cm.get_cmap("YlOrRd")(i) for i in np.linspace(0.4, 1, 8))
+    return ring_colours
+
+
 class InvalidNetworkException(Exception):
     def __init__(self, message):
         self.message = message
@@ -348,6 +355,9 @@ class BSSData:
         self.translate((np.mean(self.dimensions, axis=0) - node.coord))
 
     def _attempt_fixed_ring_recenter(self) -> None:
+        """
+        Attempts to center the network about a fixed ring
+        """
         if len(self.fixed_rings) > 1:
             print("Warning, fixed ring center requested but there are more than one fixed rings")
             selected_fixed_ring = self.ring_network.nodes[list(self.fixed_rings)[0]]
@@ -871,48 +881,13 @@ class BSSData:
                                     font_size=7, font_color="purple")
         plt.gca().set_aspect('equal', adjustable='box')
 
-    def get_ring_colours_1(self) -> list[tuple[float, float, float, float]]:
-        colour_maps = ["YlGnBu", "YlGnBu", "GnBu", "Greys", "YlOrRd", "YlOrRd", "RdPu", "RdPu"]
-        colours = [0.8, 0.7, 0.6, 0.3, 0.3, 0.5, 0.4, 0.7]
-        ring_colours = [to_rgba("white")] * 3
-        ring_colours.extend(cm.get_cmap(cmap)(colour) for cmap, colour in zip(colour_maps, colours))
-        ring_colours.extend([to_rgba("black")] * 30)
-        return ring_colours
-
-    def get_ring_colours_2(self) -> list[tuple[float, float, float, float]]:
-        map_lower = ListedColormap(cm.get_cmap("Blues_r")(np.arange(20, 100)))
-        map_upper = ListedColormap(cm.get_cmap("Reds")(np.arange(50, 100)))
-        average_ring_size = 6
-        norm_lower = Normalize(vmin=average_ring_size - 3, vmax=average_ring_size)
-        norm_upper = Normalize(vmin=average_ring_size, vmax=average_ring_size + 6)
-        colour_mean = cm.get_cmap("Greys")(50)
-
-        return [to_rgba("white") if i < 3 else
-                colour_mean if np.abs(i - average_ring_size) < 1e-6 else
-                map_lower(norm_lower(i)) if i < average_ring_size else
-                map_upper(norm_upper(i)) for i in range(340)]
-
-    def get_ring_colours_3(self) -> list[tuple[float, float, float, float]]:
-        colormaps = ["GnBu", "Greens", "Blues", "Greys", "Reds", "YlOrBr", "PuRd", "RdPu"]
-        color_values = [140, 100, 150, 90, 105, 100, 100, 80]
-        ring_colours = [to_rgba("white")] * 3
-        ring_colours.extend(cm.get_cmap(cmap)(value) for cmap, value in zip(colormaps, color_values))
-        ring_colours.extend([to_rgba("black")] * 30)
-        return ring_colours
-
-    def get_ring_colours_4(self) -> list[tuple[float, float, float, float]]:
-        ring_colours = [to_rgba("white")] * 3
-        ring_colours.extend(cm.get_cmap("cividis")(i) for i in np.linspace(0, 1, 8))
-        ring_colours.extend(cm.get_cmap("YlOrRd")(i) for i in np.linspace(0.4, 1, 8))
-        return ring_colours
-
     def draw_graph_pretty_figures(self, draw_dimensions: bool = False, draw_legend: bool = False) -> None:
         if not self.ring_network.nodes:
             print("No nodes to draw.")
             return
         ax = plt.gca()
         patches, colours, lines, dashed_patches = [], [], [], []
-        ring_colours = self.get_ring_colours_4()
+        ring_colours = get_ring_colours_4()
         for ring_node in self.ring_network.nodes:
             pbc_coords = np.array([ring_node.coord - pbc_vector(base_node.coord, ring_node.coord, self.dimensions) for base_node in ring_node.ring_neighbours])
             polygon = Polygon(pbc_coords, closed=True)
