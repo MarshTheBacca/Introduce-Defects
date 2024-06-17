@@ -59,10 +59,50 @@ def calculate_angle(coord_1: np.ndarray, coord_2: np.ndarray, coord_3: np.ndarra
     magnitude2 = np.linalg.norm(vector2)
     # Clamp the value to the range [-1, 1] to avoid RuntimeWarning from floating point errors
     dot_product_over_magnitudes = np.clip(dot_product / (magnitude1 * magnitude2), -1.0, 1.0)
-    angle = np.arccos(dot_product_over_magnitudes)
-    angle = np.degrees(angle)
-    # Return the acute angle
-    return min(angle, 180 - angle)
+    return np.degrees(np.arccos(dot_product_over_magnitudes))
+
+
+def arrange_clockwise(center_coord: np.ndarray, coords: np.ndarray) -> np.ndarray:
+    """
+    Sorts the coordinates in a clockwise direction around the center coordinate.
+
+    Args:
+        center_coord: np.ndarray, the center coordinate
+        coords: np.ndarray, the coordinates to be sorted
+
+    Returns:
+        np.ndarray, the sorted coordinates
+    """
+    # Calculate the angles of the vectors from the center coordinate to each coordinate
+    angles = np.arctan2(coords[:, 1] - center_coord[1], coords[:, 0] - center_coord[0])
+    angles = angles % (2 * np.pi)  # adjust the angles to be between 0 and 2*pi
+    # Sort the coordinates based on the angles
+    sorted_coords = coords[np.argsort(angles)]
+    return sorted_coords
+
+
+def calculate_angles_around_node(center_coord: np.ndarray, neighbour_coords: np.ndarray) -> np.ndarray:
+    """
+    Calculates the angles (in degrees) between neighbours around a center coordinate in a clockwise direction.
+
+    Args:
+        center_coord: np.ndarray, the center coordinate
+        neighbour_coords: np.ndarray, the coordinates of the neighbours
+
+    Returns:
+        np.ndarray, the angles between neighbours around the center coordinate in a clockwise direction
+    """
+    # Sort the neighbour coordinates in a clockwise direction around the node
+    neighbour_coords = arrange_clockwise(center_coord, neighbour_coords)
+    # Calculate the angles of the vectors from the node to each neighbour
+    angles = np.arctan2(neighbour_coords[:, 1] - center_coord[1], neighbour_coords[:, 0] - center_coord[0])
+    angles = angles % (2 * np.pi)  # adjust the angles to be between 0 and 2*pi
+    # Calculate the differences between each pair of consecutive angles in a clockwise direction
+    angles = np.concatenate([angles, [angles[0]]])  # append the first angle to handle the wrap-around at 2*pi
+    angles[:-1] = np.diff(angles)  # calculate the differences
+    angles = angles[:-1] % (2 * np.pi)  # use modulo 2*pi to handle the wrap-around at 2*pi
+    angles = np.degrees(angles)  # convert to degrees
+    return angles
 
 
 def is_pbc_bond(coord_1: np.ndarray, coord_2: np.ndarray, dimensions: np.ndarray) -> bool:
