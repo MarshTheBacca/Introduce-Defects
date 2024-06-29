@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -14,11 +13,12 @@ from matplotlib.patches import Patch
 from matplotlib.axes import Axes
 from matplotlib.backend_bases import KeyEvent, ResizeEvent
 from matplotlib.collections import PatchCollection
-from matplotlib.colors import ListedColormap, Normalize, to_rgba
+from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
 from matplotlib.text import Text
 from matplotlib.ticker import MaxNLocator
+from matplotlib import colormaps as mpl_colormaps
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy.stats import gaussian_kde
 
@@ -30,8 +30,8 @@ from .other_utils import (find_common_elements, is_pbc_bond, pbc_vector,
 
 def get_ring_colours_4() -> list[tuple[float, float, float, float]]:
     ring_colours = [to_rgba("white")] * 3
-    ring_colours.extend(cm.get_cmap("cividis")(i) for i in np.linspace(0, 1, 8))
-    ring_colours.extend(cm.get_cmap("YlOrRd")(i) for i in np.linspace(0.4, 1, 8))
+    ring_colours.extend(mpl_colormaps["cividis"](i) for i in np.linspace(0, 1, 8))
+    ring_colours.extend(mpl_colormaps["YlOrRd"](i) for i in np.linspace(0.4, 1, 8))
     return ring_colours
 
 
