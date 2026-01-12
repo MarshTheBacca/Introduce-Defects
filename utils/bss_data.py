@@ -852,7 +852,7 @@ class BSSData:
         if base_ring_bonds:
             for node in self.ring_network.nodes:
                 for neighbour in node.ring_neighbours:
-                    if not is_pbc_bond(node.coord, neighbour, self.dimensions):
+                    if not is_pbc_bond(node.coord, neighbour.coord, self.dimensions):
                         graph.add_edge(node.id + id_shift, neighbour.id, source='base_ring_bonds')
 
         node_colours = ['red' if data['source'] == 'base_network' else 'blue' for _, data in graph.nodes(data=True)]
